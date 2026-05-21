@@ -4,13 +4,10 @@ on:
   pull_request:
     branches:
       - main
-  push:
-    branches:
-      - main
-  workflow_dispatch:
 
 jobs:
   check:
+    name: Rust CI
     runs-on: ubuntu-latest
 
     steps:
@@ -25,11 +22,11 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Prompt Assets Check
-        run: make prompt-assets-check
-
       - name: Baseline Checks (make check)
         run: make check
 
       - name: Docs Check
         run: make docs-check
+
+      - name: Prompt Assets Check
+        run: make prompt-assets-check
