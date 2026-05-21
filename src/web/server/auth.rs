@@ -153,6 +153,10 @@ pub async fn connect_telegram_for_workspace_with_metadata(
     chat_id: i64,
     metadata: Option<serde_json::Value>,
 ) -> Result<String, ServerFnError> {
+    if workspace_id != crate::workspace::active_workspace_id() {
+        return Err(ServerFnError::new("Workspace mismatch."));
+    }
+
     let existing = crate::db::list_channel_identities(pool, None)
         .await
         .map_err(|e| ServerFnError::new(format!("Database error: {}", e)))?;
@@ -163,15 +167,9 @@ pub async fn connect_telegram_for_workspace_with_metadata(
         return Ok("Telegram channel already connected.".to_string());
     }
 
-    crate::db::insert_channel_identity(
-        pool,
-        workspace_id,
-        "TELEGRAM",
-        &chat_id.to_string(),
-        metadata,
-    )
-    .await
-    .map_err(|e| ServerFnError::new(format!("Failed to connect Telegram channel: {}", e)))?;
+    crate::db::insert_channel_identity(pool, "TELEGRAM", &chat_id.to_string(), metadata)
+        .await
+        .map_err(|e| ServerFnError::new(format!("Failed to connect Telegram channel: {}", e)))?;
 
     Ok("Telegram channel connected.".to_string())
 }
@@ -431,7 +429,7 @@ pub async fn get_dashboard_summary() -> Result<DashboardSummary, ServerFnError> 
     let session: Session = leptos_axum::extract()
         .await
         .map_err(|e| ServerFnError::new(format!("extract session: {}", e)))?;
-    let _workspace_id = require_session_workspace_id(&session).await?;
+    require_session_workspace_id(&session).await?;
 
     let row = sqlx::query(
         r#"
@@ -649,7 +647,7 @@ pub async fn complete_company_onboarding(company_name: String) -> Result<(), Ser
     let session: Session = leptos_axum::extract()
         .await
         .map_err(|e| ServerFnError::new(format!("extract session: {}", e)))?;
-    let _workspace_id = require_session_workspace_id(&session).await?;
+    require_session_workspace_id(&session).await?;
 
     let company_name = company_name.trim();
     if company_name.is_empty() {
@@ -717,7 +715,7 @@ pub async fn list_company_channels() -> Result<Vec<CompanyChannel>, ServerFnErro
     let session: Session = leptos_axum::extract()
         .await
         .map_err(|e| ServerFnError::new(format!("extract session: {}", e)))?;
-    let _workspace_id = require_session_workspace_id(&session).await?;
+    require_session_workspace_id(&session).await?;
 
     let channels = crate::db::list_channel_identities(&pool, None)
         .await
@@ -744,9 +742,9 @@ pub async fn get_telegram_channel_avatar(channel_id: i64) -> Result<Option<Strin
     let session: Session = leptos_axum::extract()
         .await
         .map_err(|e| ServerFnError::new(format!("extract session: {}", e)))?;
-    let workspace_id = require_session_workspace_id(&session).await?;
+    require_session_workspace_id(&session).await?;
 
-    let channel = crate::db::get_channel_identity_for_workspace(&pool, workspace_id, channel_id)
+    let channel = crate::db::get_channel_identity(&pool, channel_id)
         .await
         .map_err(|e| ServerFnError::new(format!("Database error: {}", e)))?;
     let Some(channel) = channel else {
@@ -792,9 +790,9 @@ pub async fn delete_company_channel(channel_id: i64) -> Result<(), ServerFnError
     let session: Session = leptos_axum::extract()
         .await
         .map_err(|e| ServerFnError::new(format!("extract session: {}", e)))?;
-    let workspace_id = require_session_workspace_id(&session).await?;
+    require_session_workspace_id(&session).await?;
 
-    let deleted = crate::db::delete_channel_identity_for_workspace(&pool, workspace_id, channel_id)
+    let deleted = crate::db::delete_channel_identity(&pool, channel_id)
         .await
         .map_err(|e| ServerFnError::new(format!("Database error: {}", e)))?;
 
@@ -894,7 +892,7 @@ pub async fn get_telegram_connect_status(
     let session: Session = leptos_axum::extract()
         .await
         .map_err(|e| ServerFnError::new(format!("extract session: {}", e)))?;
-    let _workspace_id = require_session_workspace_id(&session).await?;
+    require_session_workspace_id(&session).await?;
     let app_config =
         crate::config::load().map_err(|e| ServerFnError::new(format!("Config error: {}", e)))?;
 
@@ -1182,7 +1180,7 @@ pub async fn get_document_list(
     let session: Session = leptos_axum::extract()
         .await
         .map_err(|e| ServerFnError::new(format!("extract session: {}", e)))?;
-    let _workspace_id = require_session_workspace_id(&session).await?;
+    require_session_workspace_id(&session).await?;
 
     let month_clean = month
         .map(|m| m.trim().to_string())
@@ -1283,7 +1281,7 @@ pub async fn get_document_details(
     let session: Session = leptos_axum::extract()
         .await
         .map_err(|e| ServerFnError::new(format!("extract session: {}", e)))?;
-    let _workspace_id = require_session_workspace_id(&session).await?;
+    require_session_workspace_id(&session).await?;
 
     let short_ref = short_ref.trim().to_string();
     if short_ref.is_empty() {

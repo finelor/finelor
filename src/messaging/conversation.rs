@@ -3,7 +3,6 @@ use std::collections::BTreeSet;
 use crate::db::DbPool;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use uuid::Uuid;
 
 use crate::messaging::contracts::MessageSource;
 
@@ -126,7 +125,6 @@ impl AgentTurnMetadata {
 
 pub async fn load_or_create_session(
     pool: &DbPool,
-    _workspace_id: Uuid,
     session_key: &str,
     source: &MessageSource,
 ) -> anyhow::Result<AgentSession> {
@@ -204,7 +202,6 @@ pub async fn load_recent_context(
 pub async fn append_completed_turn(
     pool: &DbPool,
     session: &AgentSession,
-    _workspace_id: Uuid,
     source: &MessageSource,
     user_text: &str,
     assistant_text: &str,

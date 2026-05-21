@@ -45,25 +45,24 @@ async fn conversation_history_is_workspace_scoped_by_session_key() {
         return;
     }
 
-    let workspace_a = active_workspace(&pool, "A").await;
-    let workspace_b = active_workspace(&pool, "B").await;
+    let _workspace_a = active_workspace(&pool, "A").await;
+    let _workspace_b = active_workspace(&pool, "B").await;
     let session_key = format!(
         "agent:main:telegram:private:shared:{}",
         Uuid::new_v4().simple()
     );
     let source = source("shared", "1");
 
-    let session_a = load_or_create_session(&pool, workspace_a, &session_key, &source)
+    let session_a = load_or_create_session(&pool, &session_key, &source)
         .await
         .expect("session a");
-    let session_b = load_or_create_session(&pool, workspace_b, &session_key, &source)
+    let session_b = load_or_create_session(&pool, &session_key, &source)
         .await
         .expect("session b");
 
     append_completed_turn(
         &pool,
         &session_a,
-        workspace_a,
         &source,
         "What about D000057?",
         "D000057 is pending review.",
@@ -87,7 +86,7 @@ async fn conversation_history_is_workspace_scoped_by_session_key() {
     assert_eq!(session_a.id, session_b.id);
     assert_eq!(context_b.messages.len(), 2);
 
-    cleanup(&pool, &[workspace_a, workspace_b]).await;
+    cleanup(&pool, &[]).await;
 }
 
 #[tokio::test]
@@ -98,10 +97,10 @@ async fn conversation_history_is_bounded_and_ordered_by_turn() {
         return;
     }
 
-    let workspace_id = active_workspace(&pool, "Bounded").await;
+    let _workspace_id = active_workspace(&pool, "Bounded").await;
     let session_key = "agent:main:telegram:private:bounded";
     let source = source("bounded", "1");
-    let session = load_or_create_session(&pool, workspace_id, session_key, &source)
+    let session = load_or_create_session(&pool, session_key, &source)
         .await
         .expect("session");
 
@@ -109,7 +108,6 @@ async fn conversation_history_is_bounded_and_ordered_by_turn() {
         append_completed_turn(
             &pool,
             &session,
-            workspace_id,
             &source,
             &format!("user turn {index}"),
             &format!("assistant turn {index}"),
@@ -140,7 +138,7 @@ async fn conversation_history_is_bounded_and_ordered_by_turn() {
         ]
     );
 
-    cleanup(&pool, &[workspace_id]).await;
+    cleanup(&pool, &[]).await;
 }
 
 #[tokio::test]
@@ -151,10 +149,10 @@ async fn conversation_metadata_preserves_ordered_referents() {
         return;
     }
 
-    let workspace_id = active_workspace(&pool, "Referents").await;
+    let _workspace_id = active_workspace(&pool, "Referents").await;
     let session_key = "agent:main:telegram:private:referents";
     let source = source("referents", "1");
-    let session = load_or_create_session(&pool, workspace_id, session_key, &source)
+    let session = load_or_create_session(&pool, session_key, &source)
         .await
         .expect("session");
 
@@ -178,7 +176,6 @@ async fn conversation_metadata_preserves_ordered_referents() {
     append_completed_turn(
         &pool,
         &session,
-        workspace_id,
         &source,
         "What needs review?",
         "D000057 and D000061 need review.",
@@ -203,5 +200,5 @@ async fn conversation_metadata_preserves_ordered_referents() {
         Some("D000061")
     );
 
-    cleanup(&pool, &[workspace_id]).await;
+    cleanup(&pool, &[]).await;
 }

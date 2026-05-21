@@ -201,7 +201,6 @@ async fn execute_read_only_tool_inner(
     pool: &DbPool,
     tool_call: &ReadOnlyToolCall,
 ) -> anyhow::Result<serde_json::Value> {
-    let workspace_id = crate::workspace::active_workspace_id();
     match tool_call.name.as_str() {
         "document_status_summary" => document_status_summary(pool).await,
         "list_documents" => {
@@ -221,7 +220,7 @@ async fn execute_read_only_tool_inner(
         }
         "explain_document" => {
             let short_ref = required_short_ref(&tool_call.args)?;
-            let explanation = describe_document_why(pool, workspace_id, &short_ref).await?;
+            let explanation = describe_document_why(pool, &short_ref).await?;
             Ok(json!({
                 "short_ref": short_ref,
                 "explanation": explanation,

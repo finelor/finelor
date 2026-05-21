@@ -19,5 +19,4 @@ exports/
 .finelor/
 experiments/results/
 .env
-config.local.yaml
 **/.DS_Store

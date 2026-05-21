@@ -2,8 +2,8 @@
 //!
 //! Rule of thumb:
 //! - pure DB auth tests use per-test `in_memory_pool()`
-//! - server-fn/router/session tests use `server_fn_pool()` for serialized access
-//!   to the shared global `web::pool` singleton.
+//! - server-fn/router/session tests use `common::TestContext::server_fn()` for
+//!   serialized access to the shared global `web::pool` singleton.
 
 mod common;
 
@@ -53,12 +53,6 @@ async fn cleanup_user(pool: &SqlitePool, user_id: i64) {
 
 async fn create_test_workspace(_pool: &SqlitePool, _name_prefix: &str) -> Uuid {
     finelor::workspace::active_workspace_id()
-}
-
-async fn sqlite_session_store(pool: &SqlitePool) -> SqliteStore {
-    let store = SqliteStore::new(pool.clone());
-    store.migrate().await.expect("migrate test session store");
-    store
 }
 
 // ============================================================================
@@ -328,32 +322,9 @@ async fn test_signup_duplicate_email_fails() {
 
 #[tokio::test]
 async fn test_signup_server_fn_endpoint_is_reachable_and_redirects() {
-    let pool_guard = common::server_fn_pool().await;
-    let pool = pool_guard.pool();
-
-    common::assert_clean_signup_state(&pool).await;
-
-    let session_store = sqlite_session_store(&pool).await;
-    let session_layer = SessionManagerLayer::new(session_store)
-        .with_name("finelor.sid")
-        .with_http_only(true)
-        .with_same_site(SameSite::Lax)
-        .with_secure(false)
-        .with_expiry(Expiry::OnInactivity(time::Duration::days(30)))
-        .with_always_save(true)
-        .with_signed(Key::from(TEST_SESSION_SECRET.as_bytes()));
-
-    let app = axum::Router::new()
-        .route("/api/{*fn_name}", post(leptos_axum::handle_server_fns))
-        .layer(session_layer);
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind test listener");
-    let addr = listener.local_addr().expect("local addr");
-    let server = tokio::spawn(async move {
-        let _ = axum::serve(listener, app).await;
-    });
+    let ctx = common::TestContext::server_fn().await;
+    let pool = ctx.pool();
+    let (addr, server) = ctx.spawn_server_fn_app(TEST_SESSION_SECRET).await;
 
     let email = format!("sf_route_{}@example.com", Uuid::new_v4());
     let full_name = format!("ServerFn Route Test {}", Uuid::new_v4().simple());
@@ -396,41 +367,16 @@ async fn test_signup_server_fn_endpoint_is_reachable_and_redirects() {
         .await
         .expect("signup should create user/company");
 
-    let user_id: i64 = row.get("user_id");
-    cleanup_user(&pool, user_id).await;
-
+    let _user_id: i64 = row.get("user_id");
     server.abort();
     let _ = server.await;
-    drop(pool_guard);
 }
 
 #[tokio::test]
 async fn test_signup_allows_only_single_admin_in_oss() {
-    let pool_guard = common::server_fn_pool().await;
-    let pool = pool_guard.pool();
-    common::assert_clean_signup_state(&pool).await;
-
-    let session_store = sqlite_session_store(&pool).await;
-    let session_layer = SessionManagerLayer::new(session_store)
-        .with_name("finelor.sid")
-        .with_http_only(true)
-        .with_same_site(SameSite::Lax)
-        .with_secure(false)
-        .with_expiry(Expiry::OnInactivity(time::Duration::days(30)))
-        .with_always_save(true)
-        .with_signed(Key::from(TEST_SESSION_SECRET.as_bytes()));
-
-    let app = axum::Router::new()
-        .route("/api/{*fn_name}", post(leptos_axum::handle_server_fns))
-        .layer(session_layer);
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind test listener");
-    let addr = listener.local_addr().expect("local addr");
-    let server = tokio::spawn(async move {
-        let _ = axum::serve(listener, app).await;
-    });
+    let ctx = common::TestContext::server_fn().await;
+    let pool = ctx.pool();
+    let (addr, server) = ctx.spawn_server_fn_app(TEST_SESSION_SECRET).await;
 
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -497,36 +443,13 @@ async fn test_signup_allows_only_single_admin_in_oss() {
 
     server.abort();
     let _ = server.await;
-    drop(pool_guard);
 }
 
 #[tokio::test]
 async fn test_onboarding_and_settings_server_fns_persist_company_profile() {
-    let pool_guard = common::server_fn_pool().await;
-    let pool = pool_guard.pool();
-    common::assert_clean_signup_state(&pool).await;
-
-    let session_store = sqlite_session_store(&pool).await;
-    let session_layer = SessionManagerLayer::new(session_store)
-        .with_name("finelor.sid")
-        .with_http_only(true)
-        .with_same_site(SameSite::Lax)
-        .with_secure(false)
-        .with_expiry(Expiry::OnInactivity(time::Duration::days(30)))
-        .with_always_save(true)
-        .with_signed(Key::from(TEST_SESSION_SECRET.as_bytes()));
-
-    let app = axum::Router::new()
-        .route("/api/{*fn_name}", post(leptos_axum::handle_server_fns))
-        .layer(session_layer);
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind test listener");
-    let addr = listener.local_addr().expect("local addr");
-    let server = tokio::spawn(async move {
-        let _ = axum::serve(listener, app).await;
-    });
+    let ctx = common::TestContext::server_fn().await;
+    let pool = ctx.pool();
+    let (addr, server) = ctx.spawn_server_fn_app(TEST_SESSION_SECRET).await;
 
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -645,7 +568,6 @@ async fn test_onboarding_and_settings_server_fns_persist_company_profile() {
 
     server.abort();
     let _ = server.await;
-    drop(pool_guard);
 }
 
 #[tokio::test]
@@ -841,21 +763,18 @@ async fn test_delete_channel_identity_for_active_workspace_deletes_only_targeted
         .execute(&pool)
         .await;
 
-    let workspace_id = create_test_workspace(&pool, "Channel Delete Workspace").await;
+    let _workspace_id = create_test_workspace(&pool, "Channel Delete Workspace").await;
 
-    let first_channel =
-        finelor::db::insert_channel_identity(&pool, workspace_id, "TELEGRAM", "111222", None)
-            .await
-            .expect("Failed to create first channel");
-    let second_channel =
-        finelor::db::insert_channel_identity(&pool, workspace_id, "TELEGRAM", "333444", None)
-            .await
-            .expect("Failed to create second channel");
+    let first_channel = finelor::db::insert_channel_identity(&pool, "TELEGRAM", "111222", None)
+        .await
+        .expect("Failed to create first channel");
+    let second_channel = finelor::db::insert_channel_identity(&pool, "TELEGRAM", "333444", None)
+        .await
+        .expect("Failed to create second channel");
 
-    let own_deleted =
-        finelor::db::delete_channel_identity_for_workspace(&pool, workspace_id, first_channel.id)
-            .await
-            .expect("Workspace delete query failed");
+    let own_deleted = finelor::db::delete_channel_identity(&pool, first_channel.id)
+        .await
+        .expect("Workspace delete query failed");
     assert!(own_deleted, "Delete should remove own workspace channel");
 
     let channels = finelor::db::list_channel_identities(&pool, None)
@@ -871,4 +790,43 @@ async fn test_delete_channel_identity_for_active_workspace_deletes_only_targeted
     let _ = sqlx::query("DELETE FROM channel_identities")
         .execute(&pool)
         .await;
+}
+
+#[tokio::test]
+async fn test_server_fn_test_context_isolates_company_profile_state_between_tests() {
+    let ctx_one = common::TestContext::server_fn().await;
+    let pool_one = ctx_one.pool();
+    sqlx::query(
+        "UPDATE company_profile SET display_name = 'Mutated Co', org_nr = '123456-7890' WHERE singleton = TRUE",
+    )
+    .execute(&pool_one)
+    .await
+    .expect("mutate company profile in first context");
+    drop(ctx_one);
+
+    let ctx_two = common::TestContext::server_fn().await;
+    let pool_two = ctx_two.pool();
+    common::assert_clean_signup_state(&pool_two).await;
+}
+
+#[tokio::test]
+#[should_panic(expected = "signup tests require empty users table before request")]
+async fn test_server_fn_context_fails_fast_when_preconditions_are_dirty() {
+    let dirty_pool = common::in_memory_pool().await;
+    sqlx::query(
+        "INSERT INTO users (role, email, password_hash, display_name) VALUES ('admin', $1, $2, $3)",
+    )
+    .bind(format!("dirty_precondition_{}@example.com", Uuid::new_v4()))
+    .bind("hash")
+    .bind("Dirty User")
+    .execute(&dirty_pool)
+    .await
+    .expect("insert dirty precondition user");
+
+    let _ctx = common::TestContext::server_fn_from_pool(dirty_pool).await;
+}
+async fn sqlite_session_store(pool: &SqlitePool) -> SqliteStore {
+    let store = SqliteStore::new(pool.clone());
+    store.migrate().await.expect("migrate test session store");
+    store
 }

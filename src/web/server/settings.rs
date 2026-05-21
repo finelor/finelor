@@ -37,7 +37,7 @@ pub async fn get_company_settings() -> Result<CompanySettings, ServerFnError> {
     let session: Session = leptos_axum::extract()
         .await
         .map_err(|e| ServerFnError::new(format!("extract session: {}", e)))?;
-    let _workspace_id = require_session_workspace_id(&session).await?;
+    require_session_workspace_id(&session).await?;
 
     let row = sqlx::query(
         r#"
@@ -100,7 +100,7 @@ pub async fn update_company_settings(
     let session: Session = leptos_axum::extract()
         .await
         .map_err(|e| ServerFnError::new(format!("extract session: {}", e)))?;
-    let _workspace_id = require_session_workspace_id(&session).await?;
+    require_session_workspace_id(&session).await?;
 
     let display_name = display_name.trim();
     if display_name.is_empty() {
