@@ -1,0 +1,22 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dev
+    env_file:
+      - .env
+    environment:
+      DATABASE_PATH: /app/.finelor/db/finelor.db
+      UPLOAD_STORAGE_PATH: /app/.finelor/uploads
+      EXPORT_OUTPUT_PATH: /app/.finelor/exports
+      RUST_BACKTRACE: "1"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./migrations:/app/migrations:ro
+      - ./assets:/app/assets:ro
+      - ./config.yaml:/app/config.yaml:ro
+      - finelor_runtime:/app/.finelor
+
+volumes:
+  finelor_runtime:

@@ -1,0 +1,47 @@
+ollama:
+  base_url: "https://ollama.com/api"
+  api_key: "${OLLAMA_API_KEY}"
+  models:
+    vision: "gemma4:31b-cloud" # supported: gemma4:31b, qwen3.5
+    accountant: "kimi-k2.6:cloud" # supported: kimi-k2.6, deepseek-v3.2
+    assistant: "kimi-k2.6:cloud" # supported: kimi-k2.6,
+  vision_prompt_path: "assets/prompts/sweden/vision_agent.md"
+  accountant_prompt_path: "assets/prompts/sweden/accountant_agent.md"
+  assistant_soul_prompt_path: "assets/prompts/_shared/assistant_agent_soul.md"
+  timeout_seconds: 120
+  max_retries: 3
+  initial_backoff_ms: 500
+  max_backoff_seconds: 10
+
+database:
+  path: "${DATABASE_PATH}"
+  max_connections: 10
+
+session:
+  secret: "${SESSION_SECRET}"
+  expiry_days: 30
+  cleanup_interval_seconds: 3600
+  secure: false
+
+worker:
+  max_job_retries: 3
+
+telegram:
+  bot_token: "${TELEGRAM_BOT_TOKEN}"
+  webhook_url: null
+
+upload:
+  storage_path: "${UPLOAD_STORAGE_PATH}"
+
+export:
+  sie4_encoding: "PC8"
+  download_expiry_hours: 168
+  company_org_nr: "5560000000"
+  company_name: "Your Company AB"
+  fiscal_year_start: "20240101"
+  fiscal_year_end: "20241231"
+  output_path: "${EXPORT_OUTPUT_PATH}"
+
+logging:
+  level: "info"
+  format: "json"

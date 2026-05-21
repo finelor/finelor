@@ -1,0 +1,12 @@
+.git
+.github
+target
+.finelor
+.runtime
+*.log
+.env
+.env.*
+!.env.example
+**/.DS_Store
+uploads
+exports

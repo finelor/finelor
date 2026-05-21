@@ -1,0 +1,129 @@
+[package]
+name = "finelor"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+
+# Leptos configuration
+[package.metadata.leptos]
+# Which features to enable on the server binary
+bin-default-features = false
+bin-features = ["ssr"]
+lib-default-features = false
+lib-features = ["hydrate"]
+tailwind-input-file = "style/tailwind.css"
+watch-additional-files = ["style"]
+
+[lib]
+name = "finelor"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "finelor"
+path = "src/main.rs"
+required-features = ["ssr"]
+
+[dependencies]
+# Web framework
+leptos = { version = "0.8.19" }
+leptos_axum = { version = "0.8.9", optional = true }
+leptos_meta = { version = "0.8.6" }
+leptos_router = { version = "0.8.13" }
+leptos_dom = { version = "0.8.8" }
+leptos_icons = "0.7.1"
+icondata = { version = "0.7.0", default-features = false, features = ["lucide"] }
+console_error_panic_hook = { version = "0.1", optional = true }
+wasm-bindgen = { version = "0.2.118", optional = true }
+web-sys = { version = "0.3.95", features = ["Clipboard", "EventSource", "MessageEvent", "Navigator", "Window"], optional = true }
+
+# Auth
+argon2 = { version = "0.5", optional = true }
+tower-sessions = { version = "0.14", features = ["signed"], optional = true }
+tower-sessions-sqlx-store = { version = "0.15", features = ["sqlite"], optional = true }
+
+# Existing dependencies
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = { version = "1.0", optional = true }
+thiserror = { version = "1.0", optional = true }
+uuid = { version = "1.0", features = ["v4", "serde", "js"] }
+chrono = { version = "0.4", features = ["serde"] }
+sha2 = { version = "0.10", optional = true }
+hex = { version = "0.4", optional = true }
+async-trait = { version = "0.1.89", optional = true }
+base64 = { version = "0.22.1", optional = true }
+qrcode = { version = "0.14.1", default-features = false, features = ["svg"], optional = true }
+bigdecimal = { version = "0.4.10", optional = true }
+num-traits = { version = "0.2.19", optional = true }
+axum = { version = "0.8", features = ["multipart"], optional = true }
+tower-http = { version = "0.6", features = ["fs"], optional = true }
+config = { version = "0.14", optional = true }
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "sqlite", "uuid", "chrono", "json", "bigdecimal", "migrate"], optional = true }
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"], optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+dotenvy = { version = "0.15", optional = true }
+image = { version = "0.25", optional = true }
+tempfile = { version = "3", optional = true }
+backoff = { version = "0.4.0", features = ["tokio"], optional = true }
+tokio = { version = "1", features = ["full"], optional = true }
+tokio-stream = { version = "0.1", features = ["sync"], optional = true }
+teloxide = { version = "0.13", default-features = false, features = ["ctrlc_handler", "macros", "rustls"], optional = true }
+zip = { version = "2.2", default-features = false, features = ["deflate", "time"], optional = true }
+encoding_rs = { version = "0.8", optional = true }
+time = { version = "0.3", optional = true }
+pulldown-cmark = { version = "0.13", optional = true }
+
+[features]
+default = ["ssr"]
+# Server-side rendering feature (builds the server binary)
+ssr = [
+    "dep:leptos_axum",
+    "dep:argon2",
+    "dep:tower-sessions",
+    "dep:tower-sessions-sqlx-store",
+    "dep:anyhow",
+    "dep:thiserror",
+    "dep:sha2",
+    "dep:hex",
+    "dep:async-trait",
+    "dep:base64",
+    "dep:qrcode",
+    "dep:bigdecimal",
+    "dep:num-traits",
+    "dep:axum",
+    "dep:tower-http",
+    "dep:config",
+    "dep:sqlx",
+    "dep:tracing",
+    "dep:tracing-subscriber",
+    "dep:reqwest",
+    "dep:dotenvy",
+    "dep:image",
+    "dep:tempfile",
+    "dep:backoff",
+    "dep:tokio",
+    "dep:tokio-stream",
+    "dep:teloxide",
+    "dep:zip",
+    "dep:encoding_rs",
+    "dep:time",
+    "dep:pulldown-cmark",
+    "leptos/ssr",
+    "leptos_meta/ssr",
+    "leptos_router/ssr",
+]
+hydrate = [
+    "dep:console_error_panic_hook",
+    "dep:wasm-bindgen",
+    "dep:web-sys",
+    "leptos/hydrate",
+]
+
+[dev-dependencies]
+tokio-test = "0.4"
+wiremock = "0.6"
+http = "1.0"
+futures = "0.3"
+tower = "0.5"
+serde = { version = "1.0", features = ["derive"] }

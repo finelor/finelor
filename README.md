@@ -1,0 +1,164 @@
+# Finelor - Accounting Department on Autopilot
+
+<div align="center">
+
+> “The future of accounting is not software humans operate — it is autonomous AI systems businesses collaborate with.”
+
+</div>
+
+We are building and sharing openly the foundational infrastructure for autonomous and intelligent, AI-native financial operations where businesses interact conversationally with intelligent agents instead of traditional accounting systems and manual workflows.
+
+## Features
+
+- document (invoice and receipts) ingestion and processing
+- accounting verification generation
+- bookkeeping assistance
+- reconciliation workflows
+- approval workflows
+- export to accounting systems
+- human-in-the-loop clarifications
+- intelligent conversational support
+- And many more coming soon
+
+## Install & Run
+
+### Prerequisites
+
+- Rust toolchain (see `rust-toolchain.toml`)
+- Docker + Docker Compose (for Docker mode)
+
+### Environment Setup
+
+1. Copy environment template:
+
+    ```bash
+    cp .env.example .env
+    ```
+2. Add your Ollama API key (get your free account on [`Ollama website`](https://ollama.com/)).
+
+3. Add your Telegram bot token (See Telegram Setup).
+
+### Telegram Setup
+
+#### Step 1: 
+
+Create a telegram bot via BotFather
+
+1. In Telegram search for **@BotFather**, or in your browser visit [`t.me/BotFather`](t.me/BotFather)
+2. In **@BotFather** chat click `Open` or send `/newbot`
+2. Give your bot a display name (e.g., "Finelor").
+3. Choose a username that ends in `bot`. It must be unique (e.g., `my_finelor_bot`)
+4. BotFather gives you API token.
+5. Copy your bot's API token add add it to .env (e.g. `TELEGRAM_BOT_TOKEN=8840841306:AAGVcS0KyQZsDFIOSIDFNAdsfaD9o`)
+
+### Option A (Recommended): Run in Docker (everything in Docker)
+
+Development image/stack:
+
+```bash
+make dev-up
+```
+
+Release-style image/stack:
+
+```bash
+make release-up
+```
+
+Stop and clean volumes:
+
+```bash
+make dev-clean
+# or
+make release-clean
+```
+
+Stop without cleaning:
+
+```bash
+make dev-down
+# or
+make release-down
+```
+
+Health check:
+
+```bash
+make health
+```
+
+### Option B: Run on Host (everything on host)
+
+1. Install local toolchain dependencies:
+
+```bash
+make bootstrap-local
+```
+
+2. Run app on host:
+
+```bash
+make run
+```
+
+## First Time Use
+
+1. Sign up on `http://localhost:3000`
+2. Visit your profile page
+3. In **Channels** page connect your telegram to your Finelor bot.
+4. Send your first invoice/receipt to Finelor bot.
+
+## Advanced Configuration (Quick)
+
+- `config.yaml` is the required base application configuration.
+- `config.local.yaml` is an optional local override file (best for host/local development).
+- `.env` and shell environment variables provide values used by config placeholders and final runtime overrides.
+
+Override order (lowest -> highest):
+
+1. `config.yaml`
+2. `config.local.yaml` (if present)
+3. environment variables (shell-exported and/or loaded from `.env`)
+
+Notes:
+
+- `config.yaml` must exist.
+- `config.local.yaml` can be partial (only include keys you want to override).
+- `config.local.yaml` is for host/local runs and is not used in Docker by default.
+- for the same key, shell-exported env values override `.env` values.
+ 
+## Documentation
+Project documentation lives in [`docs/`](docs/).
+
+## Contribution
+
+We welcome contributions.
+
+1. Fork the repository and create a feature branch.
+2. Make your changes with focused commits.
+3. Run baseline checks before opening a PR:
+
+```bash
+make check
+make docs-check
+```
+
+4. For DB-backed integration checks:
+
+```bash
+make test-integration
+```
+
+5. Open a pull request with a clear summary, test evidence, and any docs updates.
+
+## Community
+
+Join the Discord community:
+
+- Discord: `https://discord.gg/Fvydsb8j8x`
+
+## License
+
+Apache 2.0 — see [`LICENSE`](LICENSE).
+
+Built by [`Finelor Team`](https://finelor.com).

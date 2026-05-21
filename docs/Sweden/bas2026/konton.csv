@@ -1,0 +1,70 @@
+kontonummer;namn;beskrivning;kategori
+1000;Immateriella tillgångar;Patent, varumärken, licenser;Tillgång
+1110;Byggnader;Fastigheter, byggnader;Tillgång
+1220;Inventarier;Maskiner, inventarier;Tillgång
+1240;Datorer;Datorer och kringutrustning;Tillgång
+1410;Varulager;Lager av handelsvaror;Tillgång
+1510;Kundfordringar;Fakturera kundfordringar;Tillgång
+1580;Övriga fordringar;Övriga kortfristiga fordringar;Tillgång
+1910;Kassa;Kontantkassa;Tillgång
+1920;Plusgiro;Postgiro/plusgiro;Tillgång
+1930;Företagskonto;Checkräkning/företagskonto;Tillgång
+1940;Övriga bankkonton;Andra bankkonton;Tillgång
+1950;Redovisningsmedel för betalningar;Transitoriska poster;Tillgång
+2010;Eget kapital;Inbetalda kapital;Kapital
+2013;Balanserat resultat;Resultat från tidigare år;Kapital
+2014;Årets resultat;Inkomstårets resultat;Kapital
+2081;Fond för utvecklingsutgifter;Avsättning till fond;Kapital
+2110;Skulder till kreditinstitut;Banklån;Skuld
+2150;Checkräkningskredit;Kortfristig kredit;Skuld
+2200;Leverantörsskulder;Obetalda leverantörsfakturor;Skuld
+2440;Skatteskulder;Preliminärskatt, moms;Skuld
+2510;Skuld till anställda;Löneskulder;Skuld
+2610;Utgående moms 25 %;Momsskuld 25%;Moms
+2620;Utgående moms 12 %;Momsskuld 12%;Moms
+2630;Utgående moms 6 %;Momsskuld 6%;Moms
+2640;Ingående moms 25 %;Momsfordran 25%;Moms
+2641;Ingående moms 12 %;Momsfordran 12%;Moms
+2642;Ingående moms 6 %;Momsfordran 6%;Moms
+2650;Redovisningskonto moms;Momstransitorier;Moms
+3000;Försäljning;Försäljning varor/tjänster;Intäkt
+3100;Försäljning tjänster;Tjänsteförsäljning;Intäkt
+3400;Försäljning varor;Varuförsäljning;Intäkt
+4000;Inköp av varor;Inköp för försäljning;Kostnad
+5200;Lokalkostnader;Lokalhyra, el, värme;Kostnad
+6100;Lokalhyra;Hyra för lokaler;Kostnad
+6110;Hyra för kontorslokaler;Kontorshyra;Kostnad
+6150;El för belysning;Elförbrukning;Kostnad
+6210;Fastighetsel;El;Kostnad
+6250;Vatten och avlopp;Vatten;Kostnad
+6310;Telefon och post;Telefon, mobil, bredband;Kostnad
+6311;Telefon;Fast telefon;Kostnad
+6312;Mobiltelefon;Mobiltelefon;Kostnad
+6313;Internet och bredband;Internetanslutning;Kostnad
+6541;IT-kostnader;Datorprogram, licenser;Kostnad
+6542;Data-,program- och systemutveckling;Systemutveckling;Kostnad
+6570;Tidningar, facklitteratur;Prenumerationer;Kostnad
+6940;Kassalikviditet;Kontant betalning;Kostnad
+6950;Banklikviditet;Bankbetalning;Kostnad
+6970;Företagsförsäkring;Försäkringspremier;Kostnad
+7000;Löner;Anställdas löner;Personalkostnad
+7010;Lön;Bruttolöner;Personalkostnad
+7210;Löneskatt;Arbetsgivaravgifter;Personalkostnad
+7280;Skatteavdrag;Preliminärskatt;Personalkostnad
+7600;Resekostnader;Tjänsteresor;Kostnad
+7630;Kost och logi;Hotell, logi;Kostnad
+7690;Enklare förtäring;Kaffe, frukt, enkel måltid;Representation
+7691;Representation - enklare förtäring;Externa möten, kaffe;Representation
+7692;Representation - middag;Externa middagar;Representation
+7693;Representation - personal;Personalaktivitet;Representation
+7694;Representation - kunder;Kundaktiviteter;Representation
+7699;Övriga representationskostnader;Annan representation;Representation
+8100;Konsultarvoden;Konsulter, rådgivare;Kostnad
+8210;Inhyrd personal;Personal från bemanningsföretag;Kostnad
+8400;Avskrivningar;Värdeminskning tillgångar;Kostnad
+8430;Avskrivningar byggnader;Fastighetsavskrivningar;Kostnad
+8470;Avskrivningar inventarier;Maskiner, inventarier;Kostnad
+8700;Övriga externa kostnader;Övriga kostnader;Kostnad
+8990;Resultat från övrig verksamhet;Periodens resultat;Resultat
+9000;Skatt på årets resultat;Inkomstskatt;Skatt
+9100;Årets resultat;Resultat efter skatt;Resultat
