@@ -155,7 +155,7 @@ make test-integration
 
 Join the Discord community:
 
-- Discord: `https://discord.gg/Fvydsb8j8x`
+- Discord: [``https://discord.gg/Fvydsb8j8x``](https://discord.gg/Fvydsb8j8x)
 
 ## License
 
