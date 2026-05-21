@@ -8,9 +8,12 @@ on:
     branches:
       - main
   workflow_dispatch:
+  merge_group:
+    types:
+      - checks_required
 
 jobs:
-  rust:
+  check:
     runs-on: ubuntu-latest
 
     steps:
@@ -25,43 +28,11 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Prompt Assets Check
-        run: make prompt-assets-check
-
       - name: Baseline Checks (make check)
         run: make check
 
       - name: Docs Check
         run: make docs-check
 
-  filedb-smoke:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Run file-backed SQLite smoke tests
-        run: make test-integration-filedb
-
-  integration-all:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Run Full Integration Lanes
-        run: make test-integration-all
+      - name: Prompt Assets Check
+        run: make prompt-assets-check

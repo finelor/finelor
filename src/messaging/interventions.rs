@@ -243,10 +243,7 @@ async fn build_intervention_response(
             attachments: Vec::new(),
             buttons: None,
         }),
-        InterventionKind::AccountingReview => {
-            reopen_review_actions(pool, crate::workspace::active_workspace_id(), &event.short_ref)
-                .await
-        }
+        InterventionKind::AccountingReview => reopen_review_actions(pool, &event.short_ref).await,
         InterventionKind::AccountingNotification => {
             Ok(accounting_notification_response(event, payload))
         }

@@ -191,7 +191,7 @@ impl AgentGatewayState {
             "Agent loop started"
         );
 
-        let accounting_context = match self.build_accounting_context_snapshot(workspace_id).await {
+        let accounting_context = match self.build_accounting_context_snapshot().await {
             Ok(snapshot) => Some(snapshot),
             Err(err) => {
                 tracing::warn!(
@@ -202,9 +202,8 @@ impl AgentGatewayState {
                 None
             }
         };
-        let (conversation_session, conversation_context) = self
-            .load_short_term_memory(workspace_id, session_key, source)
-            .await;
+        let (conversation_session, conversation_context) =
+            self.load_short_term_memory(session_key, source).await;
         let mut messages = assemble_chat_messages(PromptAssemblyInput {
             config: &self.config,
             workspace_id,
@@ -247,7 +246,6 @@ impl AgentGatewayState {
             .await?;
         self.persist_completed_turn(
             conversation_session.as_ref(),
-            workspace_id,
             source,
             text,
             &result.response,
@@ -506,10 +504,7 @@ impl AgentGatewayState {
         .map_err(anyhow::Error::from)
     }
 
-    async fn build_accounting_context_snapshot(
-        &self,
-        _workspace_id: Uuid,
-    ) -> anyhow::Result<AccountingContextSnapshot> {
+    async fn build_accounting_context_snapshot(&self) -> anyhow::Result<AccountingContextSnapshot> {
         Ok(AccountingContextSnapshot {
             workspace: workspace_profile(&self.pool).await?,
             counts: document_status_counts(&self.pool).await?,
@@ -521,23 +516,22 @@ impl AgentGatewayState {
 
     async fn load_short_term_memory(
         &self,
-        workspace_id: Uuid,
         session_key: &str,
         source: &MessageSource,
     ) -> (Option<AgentSession>, Option<ConversationContext>) {
-        let session =
-            match load_or_create_session(&self.pool, workspace_id, session_key, source).await {
-                Ok(session) => session,
-                Err(err) => {
-                    tracing::warn!(
-                        error = %err,
-                        workspace_id = %workspace_id,
-                        session_key = session_key,
-                        "Agent short-term memory unavailable"
-                    );
-                    return (None, None);
-                }
-            };
+        let workspace_id = crate::workspace::active_workspace_id();
+        let session = match load_or_create_session(&self.pool, session_key, source).await {
+            Ok(session) => session,
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    workspace_id = %workspace_id,
+                    session_key = session_key,
+                    "Agent short-term memory unavailable"
+                );
+                return (None, None);
+            }
+        };
 
         let context =
             match load_recent_context(&self.pool, session.id, DEFAULT_RECENT_TURN_LIMIT).await {
@@ -560,7 +554,6 @@ impl AgentGatewayState {
     async fn persist_completed_turn(
         &self,
         session: Option<&AgentSession>,
-        workspace_id: Uuid,
         source: &MessageSource,
         user_text: &str,
         response: &GatewayMessageResponse,
@@ -573,7 +566,6 @@ impl AgentGatewayState {
         if let Err(err) = append_completed_turn(
             &self.pool,
             session,
-            workspace_id,
             source,
             user_text,
             &response.message,
@@ -581,6 +573,7 @@ impl AgentGatewayState {
         )
         .await
         {
+            let workspace_id = crate::workspace::active_workspace_id();
             tracing::warn!(
                 error = %err,
                 workspace_id = %workspace_id,
@@ -688,13 +681,11 @@ impl AgentGatewayState {
         let response = match confirmation.action_kind {
             AgentConfirmationActionKind::OpenReview => {
                 let short_ref = confirmation_short_ref(&confirmation)?;
-                reopen_review_actions(&self.pool, confirmation.workspace_id, &short_ref).await?
+                reopen_review_actions(&self.pool, &short_ref).await?
             }
             AgentConfirmationActionKind::RetryDocument => {
                 let short_ref = confirmation_short_ref(&confirmation)?;
-                GatewayMessageResponse::text(
-                    retry_document(self, source, confirmation.workspace_id, &short_ref).await?,
-                )
+                GatewayMessageResponse::text(retry_document(self, source, &short_ref).await?)
             }
             AgentConfirmationActionKind::ExportDocuments => {
                 let args = confirmation_export_args(&confirmation);

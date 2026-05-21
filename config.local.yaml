@@ -1,0 +1,13 @@
+# Local override config for host/local development runs.
+# Values here override matching keys from config.yaml when this file is present.
+
+# DONT add any secrets here.
+
+database:
+  path: ".finelor/db/finelor.db"
+
+upload:
+  storage_path: "./.finelor/uploads"
+
+export:
+  output_path: "./.finelor/exports"

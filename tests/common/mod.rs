@@ -1,4 +1,11 @@
 #![allow(dead_code)]
+// Test lane rules:
+// - Unit tests: no DB/router.
+// - Integration tests: prefer per-test `in_memory_pool()`.
+// - Server-fn/router/session tests: use `TestContext::server_fn()` to get
+//   per-test isolated DB + router/session harness.
+// Runtime code should use `finelor::db::DbPool`; tests may use `sqlx::SqlitePool`
+// directly for local fixtures and helper ergonomics.
 
 use async_trait::async_trait;
 use finelor::error::{AppError, AppResult};
@@ -11,15 +18,13 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, OwnedMutexGuard};
-
-static SERVER_FN_POOL: OnceLock<sqlx::SqlitePool> = OnceLock::new();
-static SERVER_FN_LOCK: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
-
-const SERVER_FN_SHARED_MEMORY_DB_URL: &str =
-    "sqlite:file:finelor_server_fn?mode=memory&cache=shared";
+use tower_sessions::{
+    Expiry, SessionManagerLayer,
+    cookie::{Key, SameSite},
+};
+use tower_sessions_sqlx_store::SqliteStore;
 
 pub async fn in_memory_pool() -> sqlx::SqlitePool {
     let options = SqliteConnectOptions::new()
@@ -35,28 +40,6 @@ pub async fn in_memory_pool() -> sqlx::SqlitePool {
     finelor::db::run_migrations(&pool)
         .await
         .expect("run migrations");
-
-    pool
-}
-
-async fn shared_server_fn_pool() -> sqlx::SqlitePool {
-    let options = SqliteConnectOptions::from_str(SERVER_FN_SHARED_MEMORY_DB_URL)
-        .expect("parse server-fn shared sqlite url")
-        .foreign_keys(true)
-        .create_if_missing(true);
-
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .min_connections(1)
-        .idle_timeout(None)
-        .max_lifetime(None)
-        .connect_with(options)
-        .await
-        .expect("connect shared in-memory sqlite for server-fn tests");
-
-    finelor::db::run_migrations(&pool)
-        .await
-        .expect("run migrations for shared server-fn sqlite");
 
     pool
 }
@@ -265,91 +248,70 @@ impl InferenceProvider for FakeInferenceProvider {
     }
 }
 
-pub struct ServerFnPoolGuard {
+pub struct TestContext {
     pool: sqlx::SqlitePool,
-    _guard: OwnedMutexGuard<()>,
+    _pool_override: finelor::web::pool::TestPoolOverrideGuard,
 }
 
-impl ServerFnPoolGuard {
+impl TestContext {
+    pub async fn server_fn() -> Self {
+        let pool = in_memory_pool().await;
+        Self::server_fn_from_pool(pool).await
+    }
+
+    pub async fn server_fn_from_pool(pool: sqlx::SqlitePool) -> Self {
+        let pool_override = finelor::web::pool::override_pool_for_test(pool.clone()).await;
+        assert_clean_signup_state(&pool).await;
+        Self {
+            pool,
+            _pool_override: pool_override,
+        }
+    }
+
     pub fn pool(&self) -> sqlx::SqlitePool {
         self.pool.clone()
     }
-}
 
-pub async fn server_fn_pool() -> ServerFnPoolGuard {
-    let lock = SERVER_FN_LOCK
-        .get_or_init(|| Arc::new(Mutex::new(())))
-        .clone();
-    let guard = lock.lock_owned().await;
+    pub async fn spawn_server_fn_app(
+        &self,
+        session_secret: &str,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        let store = SqliteStore::new(self.pool.clone());
+        store
+            .migrate()
+            .await
+            .expect("migrate sqlite session store for test context");
 
-    let pool = match SERVER_FN_POOL.get() {
-        Some(pool) => pool.clone(),
-        None => {
-            let pool = shared_server_fn_pool().await;
-            finelor::web::pool::set_pool(pool.clone());
-            let _ = SERVER_FN_POOL.set(pool.clone());
-            pool
-        }
-    };
+        let session_layer = SessionManagerLayer::new(store)
+            .with_name("finelor.sid")
+            .with_http_only(true)
+            .with_same_site(SameSite::Lax)
+            .with_secure(false)
+            .with_expiry(Expiry::OnInactivity(time::Duration::days(30)))
+            .with_always_save(true)
+            .with_signed(Key::from(session_secret.as_bytes()));
+        let app = axum::Router::new()
+            .route(
+                "/api/{*fn_name}",
+                axum::routing::post(leptos_axum::handle_server_fns),
+            )
+            .layer(session_layer);
 
-    reset_server_fn_pool(&pool).await;
-
-    ServerFnPoolGuard {
-        pool,
-        _guard: guard,
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener");
+        let addr = listener.local_addr().expect("local addr");
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (addr, server)
     }
 }
 
-async fn reset_server_fn_pool(pool: &sqlx::SqlitePool) {
-    let mut tx = pool
-        .begin()
-        .await
-        .expect("reset shared server_fn pool: begin transaction");
-
-    sqlx::query("PRAGMA foreign_keys = OFF")
-        .execute(&mut *tx)
-        .await
-        .expect("reset shared server_fn pool: disable foreign keys");
-
-    clear_table_if_exists_tx(&mut tx, "export_batches").await;
-    clear_table_if_exists_tx(&mut tx, "tower_sessions").await;
-    clear_table_if_exists_tx(&mut tx, "channel_identities").await;
-    clear_table_if_exists_tx(&mut tx, "users").await;
-
-    sqlx::query(
-        "UPDATE company_profile SET display_name = NULL, org_nr = NULL, jurisdiction = 'SE' WHERE singleton = TRUE",
-    )
-    .execute(&mut *tx)
-    .await
-    .expect("reset shared server_fn pool: reset company_profile");
-
-    sqlx::query("PRAGMA foreign_keys = ON")
-        .execute(&mut *tx)
-        .await
-        .expect("reset shared server_fn pool: enable foreign keys");
-
-    tx.commit()
-        .await
-        .expect("reset shared server_fn pool: commit transaction");
-}
-
-async fn clear_table_if_exists_tx(tx: &mut sqlx::SqliteTransaction<'_>, table: &str) {
-    let exists: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = $1")
-            .bind(table)
-            .fetch_one(&mut **tx)
-            .await
-            .unwrap_or_else(|e| {
-                panic!("reset shared server_fn pool: check table {table} exists: {e}")
-            });
-
-    if exists > 0 {
-        let statement = format!("DELETE FROM {table}");
-        sqlx::query(&statement)
-            .execute(&mut **tx)
-            .await
-            .unwrap_or_else(|e| panic!("reset shared server_fn pool: delete {table}: {e}"));
-    }
+// TODO: remove after all legacy callers migrate to `TestContext::server_fn()`.
+#[allow(dead_code)]
+pub async fn server_fn_pool() -> TestContext {
+    TestContext::server_fn().await
 }
 
 pub async fn assert_clean_signup_state(pool: &sqlx::SqlitePool) {

@@ -4,7 +4,6 @@ use sqlx::sqlite::{
 };
 use sqlx::{Executor, FromRow, SqlitePool};
 use std::str::FromStr;
-use uuid::Uuid;
 
 use crate::config::DatabaseConfig;
 use crate::error::AppResult;
@@ -143,7 +142,6 @@ pub struct ChannelIdentity {
 
 pub async fn insert_channel_identity(
     pool: &DbPool,
-    _workspace_id: Uuid,
     channel_type: &str,
     channel_identifier: &str,
     metadata: Option<serde_json::Value>,
@@ -195,9 +193,8 @@ pub async fn list_channel_identities(
     Ok(rows)
 }
 
-pub async fn get_channel_identity_for_workspace(
+pub async fn get_channel_identity(
     pool: &DbPool,
-    _workspace_id: Uuid,
     channel_id: i64,
 ) -> Result<Option<ChannelIdentity>, sqlx::Error> {
     sqlx::query_as::<_, ChannelIdentity>(
@@ -208,11 +205,7 @@ pub async fn get_channel_identity_for_workspace(
     .await
 }
 
-pub async fn delete_channel_identity_for_workspace(
-    pool: &DbPool,
-    _workspace_id: Uuid,
-    channel_id: i64,
-) -> Result<bool, sqlx::Error> {
+pub async fn delete_channel_identity(pool: &DbPool, channel_id: i64) -> Result<bool, sqlx::Error> {
     let result = sqlx::query(
         r#"
         DELETE FROM channel_identities
@@ -237,9 +230,8 @@ pub struct DocumentListRow {
     pub received_at: DateTime<Utc>,
 }
 
-pub async fn list_documents_by_workspace(
+pub async fn list_documents(
     pool: &DbPool,
-    _workspace_id: Uuid,
     limit: i64,
 ) -> Result<Vec<DocumentListRow>, sqlx::Error> {
     let rows = sqlx::query_as::<_, DocumentListRow>(

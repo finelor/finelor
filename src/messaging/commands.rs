@@ -39,6 +39,12 @@ pub async fn execute_gateway_intent(
     workspace_id: Uuid,
     resolution: &GatewayIntentResolution,
 ) -> anyhow::Result<GatewayMessageResponse> {
+    if workspace_id != crate::workspace::active_workspace_id() {
+        return Ok(GatewayMessageResponse::text(
+            "Workspace scope mismatch. Please retry from your active workspace session.",
+        ));
+    }
+
     if resolution.missing_args.iter().any(|arg| arg == "short_ref") {
         return Ok(GatewayMessageResponse::text(format!(
             "Please include a document reference, for example /{} D000123.",
@@ -50,21 +56,20 @@ pub async fn execute_gateway_intent(
         GatewayIntentKind::Help => Ok(GatewayMessageResponse::text(build_help_message())),
         GatewayIntentKind::Status => Ok(GatewayMessageResponse::text(
             if let Some(short_ref) = resolution.args.short_ref.as_deref() {
-                build_document_status_message(&state.pool, workspace_id, short_ref).await?
+                build_document_status_message(&state.pool, short_ref).await?
             } else {
-                build_status_message(&state.pool, workspace_id).await?
+                build_status_message(&state.pool).await?
             },
         )),
         GatewayIntentKind::Documents => Ok(GatewayMessageResponse::text(
-            build_all_documents_message(&state.pool, workspace_id).await?,
+            build_all_documents_message(&state.pool).await?,
         )),
         GatewayIntentKind::Pending => Ok(GatewayMessageResponse::text(
-            build_attention_required_message(&state.pool, workspace_id).await?,
+            build_attention_required_message(&state.pool).await?,
         )),
         GatewayIntentKind::Ready => Ok(GatewayMessageResponse::text(
             build_document_list_message(
                 &state.pool,
-                workspace_id,
                 "EXPORT_READY",
                 "No documents are currently in your export pool.",
                 "Documents ready for export",
@@ -72,28 +77,28 @@ pub async fn execute_gateway_intent(
             .await?,
         )),
         GatewayIntentKind::Last => Ok(GatewayMessageResponse::text(
-            build_last_message(&state.pool, workspace_id).await?,
+            build_last_message(&state.pool).await?,
         )),
         GatewayIntentKind::Why => {
             let Some(short_ref) = resolution.args.short_ref.as_deref() else {
                 return Ok(GatewayMessageResponse::text("Usage: /why D000123"));
             };
             Ok(GatewayMessageResponse::text(
-                describe_document_why(&state.pool, workspace_id, short_ref).await?,
+                describe_document_why(&state.pool, short_ref).await?,
             ))
         }
         GatewayIntentKind::Review => {
             let Some(short_ref) = resolution.args.short_ref.as_deref() else {
                 return Ok(GatewayMessageResponse::text("Usage: /review D000123"));
             };
-            reopen_review_actions(&state.pool, workspace_id, short_ref).await
+            reopen_review_actions(&state.pool, short_ref).await
         }
         GatewayIntentKind::Retry => {
             let Some(short_ref) = resolution.args.short_ref.as_deref() else {
                 return Ok(GatewayMessageResponse::text("Usage: /retry D000123"));
             };
             Ok(GatewayMessageResponse::text(
-                retry_document(state, source, workspace_id, short_ref).await?,
+                retry_document(state, source, short_ref).await?,
             ))
         }
         GatewayIntentKind::Export => {
@@ -118,7 +123,7 @@ pub fn build_help_message() -> String {
         .to_string()
 }
 
-async fn build_status_message(pool: &DbPool, _workspace_id: Uuid) -> anyhow::Result<String> {
+async fn build_status_message(pool: &DbPool) -> anyhow::Result<String> {
     let counts = document_status_counts(pool).await?;
     let last = latest_document(pool).await?;
     let mut lines = vec![
@@ -138,11 +143,7 @@ async fn build_status_message(pool: &DbPool, _workspace_id: Uuid) -> anyhow::Res
     Ok(lines.join("\n"))
 }
 
-async fn build_document_status_message(
-    pool: &DbPool,
-    _workspace_id: Uuid,
-    short_ref: &str,
-) -> anyhow::Result<String> {
+async fn build_document_status_message(pool: &DbPool, short_ref: &str) -> anyhow::Result<String> {
     let Some(document) = document_summary_by_short_ref(pool, short_ref).await? else {
         return Ok(format!(
             "Document {} was not found for this company.",
@@ -178,7 +179,6 @@ async fn build_document_status_message(
 
 async fn build_document_list_message(
     pool: &DbPool,
-    _workspace_id: Uuid,
     status: &str,
     empty_message: &str,
     title: &str,
@@ -200,10 +200,7 @@ async fn build_document_list_message(
     Ok(lines.join("\n"))
 }
 
-async fn build_attention_required_message(
-    pool: &DbPool,
-    _workspace_id: Uuid,
-) -> anyhow::Result<String> {
+async fn build_attention_required_message(pool: &DbPool) -> anyhow::Result<String> {
     let documents = list_documents_requiring_attention(pool, 11).await?;
     if documents.is_empty() {
         return Ok("No documents currently need your attention.".to_string());
@@ -221,7 +218,7 @@ async fn build_attention_required_message(
     Ok(lines.join("\n"))
 }
 
-async fn build_last_message(pool: &DbPool, _workspace_id: Uuid) -> anyhow::Result<String> {
+async fn build_last_message(pool: &DbPool) -> anyhow::Result<String> {
     let Some(document) = latest_document(pool).await? else {
         return Ok("No documents found for this company yet.".to_string());
     };
@@ -252,7 +249,7 @@ async fn build_last_message(pool: &DbPool, _workspace_id: Uuid) -> anyhow::Resul
     Ok(lines.join("\n"))
 }
 
-async fn build_all_documents_message(pool: &DbPool, _workspace_id: Uuid) -> anyhow::Result<String> {
+async fn build_all_documents_message(pool: &DbPool) -> anyhow::Result<String> {
     let documents = list_recent_documents(pool, 26).await?;
     if documents.is_empty() {
         return Ok("No documents found for this company yet.".to_string());
@@ -270,11 +267,7 @@ async fn build_all_documents_message(pool: &DbPool, _workspace_id: Uuid) -> anyh
     Ok(lines.join("\n"))
 }
 
-pub async fn describe_document_why(
-    pool: &DbPool,
-    _workspace_id: Uuid,
-    short_ref: &str,
-) -> anyhow::Result<String> {
+pub async fn describe_document_why(pool: &DbPool, short_ref: &str) -> anyhow::Result<String> {
     let Some(details) = document_why_details(pool, short_ref).await? else {
         return Ok(format!(
             "Document {} was not found for this company.",
@@ -370,7 +363,6 @@ pub async fn describe_document_why(
 pub(crate) async fn retry_document(
     state: &AgentGatewayState,
     source: &MessageSource,
-    _workspace_id: Uuid,
     short_ref: &str,
 ) -> anyhow::Result<String> {
     let Some(document) = retry_document_by_short_ref(&state.pool, short_ref).await? else {
@@ -522,7 +514,6 @@ pub(crate) async fn retry_document(
 
 pub(crate) async fn reopen_review_actions(
     pool: &DbPool,
-    workspace_id: Uuid,
     short_ref: &str,
 ) -> anyhow::Result<GatewayMessageResponse> {
     let Some(document) = document_ref_by_short_ref(pool, short_ref).await? else {
@@ -549,7 +540,7 @@ pub(crate) async fn reopen_review_actions(
     )
     .await?;
 
-    let attachments = source_media_attachment(pool, workspace_id, document.id).await?;
+    let attachments = source_media_attachment(pool, document.id).await?;
 
     Ok(GatewayMessageResponse {
         message: build_review_message(&summary),
@@ -561,7 +552,6 @@ pub(crate) async fn reopen_review_actions(
 
 async fn source_media_attachment(
     pool: &DbPool,
-    _workspace_id: Uuid,
     document_id: i64,
 ) -> anyhow::Result<Vec<GatewayAttachment>> {
     let Some(artifact) = latest_source_media_artifact(pool, document_id).await? else {
@@ -1174,7 +1164,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_export_user_id_reads_connected_by_user_id_from_channel_metadata() {
-        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+        let pool = DbPool::connect("sqlite::memory:")
             .await
             .expect("sqlite memory pool");
         sqlx::query(
@@ -1240,7 +1230,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_export_user_id_fails_when_owner_metadata_missing() {
-        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+        let pool = DbPool::connect("sqlite::memory:")
             .await
             .expect("sqlite memory pool");
         sqlx::query(
@@ -1283,7 +1273,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_export_user_id_fails_when_owner_user_no_longer_exists() {
-        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+        let pool = DbPool::connect("sqlite::memory:")
             .await
             .expect("sqlite memory pool");
         sqlx::query(
