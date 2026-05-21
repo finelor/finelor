@@ -14,7 +14,7 @@ endif
 	help check \
 	bootstrap-local \
 	env-init \
-	test test-integration test-integration-filedb test-integration-all test-integration-filedb-cleanup \
+	test \
 	run run-debug run-release \
 	web-watch web-build web-build-release tailwind-preflight web-assets-check ui-class-check \
 	prompt-assets-check \
@@ -119,8 +119,21 @@ check: ## Run baseline local checks (fmt, test, clippy)
 	cargo test
 	cargo clippy --all-targets -- -D warnings
 
-test: ## Run all Rust tests
+test: ## Run all Rust tests and clean file-backed SQLite temp artifacts
 	cargo test
+ifeq ($(OS),Windows_NT)
+	@powershell -NoProfile -ExecutionPolicy Bypass -Command "\
+	$$targets = @('finelor-it-*.db','finelor-it-*.db-wal','finelor-it-*.db-shm'); \
+	$$roots = @($$env:TEMP, $$env:TMP, [System.IO.Path]::GetTempPath()) | Where-Object { $_ } | Select-Object -Unique; \
+	foreach ($$root in $$roots) { foreach ($$pattern in $$targets) { Get-ChildItem -Path $$root -Filter $$pattern -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue } }; \
+	Write-Output 'Test temp DB artifacts cleaned from Windows temp directories.'"
+else
+	@set -eu; \
+	tmp_root="$${TMPDIR:-/tmp}"; \
+	rm -f "$$tmp_root"/finelor-it-*.db "$$tmp_root"/finelor-it-*.db-wal "$$tmp_root"/finelor-it-*.db-shm 2>/dev/null || true; \
+	rm -f /tmp/finelor-it-*.db /tmp/finelor-it-*.db-wal /tmp/finelor-it-*.db-shm 2>/dev/null || true; \
+	echo "Test temp DB artifacts cleaned from $$tmp_root and /tmp"
+endif
 
 ui-class-check: ## Ensure Tailwind/DaisyUI classes stay inside the internal UI library
 	@echo "Checking web UI class boundaries..."
@@ -317,34 +330,3 @@ health: ## Call the app health endpoint once
 build-release: web-build-release ## Build Leptos SSR server + hydrated WASM assets locally with --release
 
 docker-build: release-build
-
-# -----------------------------------------------------------------------------
-# Integration test helpers
-# -----------------------------------------------------------------------------
-test-integration: ## Run integration tests against in-memory SQLite (default fast lane)
-	cargo test \
-		--test agent_conversation_tests \
-		--test db_integration_tests \
-		--test messaging_flow_tests \
-		--test migration_contract_tests \
-		--test ollama_client_tests \
-		--test orchestration_flow_tests \
-		--test pipeline_integration_tests \
-		--test query_tests \
-		--test web_auth_tests \
-		--test webhook_ingestion_tests
-
-test-integration-filedb: ## Run file-backed SQLite smoke integration tests (optional lane)
-	cargo test --test sqlite_filedb_smoke_tests
-	$(MAKE) test-integration-filedb-cleanup
-
-test-integration-filedb-cleanup: ## Remove file-backed integration SQLite temp artifacts
-	@set -eu; \
-	tmp_root="$${TMPDIR:-/tmp}"; \
-	rm -f "$$tmp_root"/finelor-it-*.db "$$tmp_root"/finelor-it-*.db-wal "$$tmp_root"/finelor-it-*.db-shm 2>/dev/null || true; \
-	rm -f /tmp/finelor-it-*.db /tmp/finelor-it-*.db-wal /tmp/finelor-it-*.db-shm 2>/dev/null || true; \
-	echo "File-backed integration temp DB artifacts cleaned from $$tmp_root and /tmp"
-
-test-integration-all: ## Run both integration lanes: in-memory default + file-backed smoke
-	$(MAKE) test-integration
-	$(MAKE) test-integration-filedb
