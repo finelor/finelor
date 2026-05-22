@@ -67,12 +67,6 @@ pub enum ChannelType {
     /// Slack conversation — identified by Slack channel ID.
     #[serde(rename = "SLACK")]
     Slack,
-    /// Slack direct message — identified by Slack user ID.
-    #[serde(rename = "SLACK_DM")]
-    SlackDm,
-    /// Slack group/channel — identified by Slack channel ID.
-    #[serde(rename = "SLACK_GROUP")]
-    SlackGroup,
     /// WhatsApp chat — identified by phone number.
     #[serde(rename = "WHATSAPP")]
     Whatsapp,
@@ -95,8 +89,6 @@ impl ChannelType {
         match normalized.as_str() {
             "TELEGRAM" => Some(Self::Telegram),
             "SLACK" => Some(Self::Slack),
-            "SLACK_DM" | "SLACKDM" | "SLACK DM" => Some(Self::SlackDm),
-            "SLACK_GROUP" | "SLACKGROUP" | "SLACK GROUP" => Some(Self::SlackGroup),
             "WHATSAPP" => Some(Self::Whatsapp),
             "WEBHOOK" => Some(Self::Webhook),
             "API" => Some(Self::Api),
@@ -110,8 +102,6 @@ impl ChannelType {
         match self {
             Self::Telegram => "TELEGRAM",
             Self::Slack => "SLACK",
-            Self::SlackDm => "SLACK_DM",
-            Self::SlackGroup => "SLACK_GROUP",
             Self::Whatsapp => "WHATSAPP",
             Self::Webhook => "WEBHOOK",
             Self::Api => "API",
