@@ -1,3 +1,4 @@
+use crate::db::ChannelType;
 use crate::db::DbPool;
 use crate::kv::EphemeralStore;
 use chrono::{DateTime, Utc};
@@ -28,6 +29,7 @@ pub struct InterventionTarget {
     pub channel_type: String,
     pub channel_identifier: String,
     pub profile_identifier: Option<String>,
+    pub metadata: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,16 +60,19 @@ struct ArtifactTarget {
     channel_type: String,
     channel_identifier: String,
     profile_identifier: Option<String>,
+    metadata: Option<Value>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct AccountingTarget {
     channel_type: String,
     channel_identifier: String,
+    metadata: Option<Value>,
 }
 
 pub async fn pending_document_interventions(
     pool: &DbPool,
+    accounting_channel_type: Option<ChannelType>,
     since: DateTime<Utc>,
     limit: i64,
 ) -> anyhow::Result<Vec<DocumentIntervention>> {
@@ -75,7 +80,9 @@ pub async fn pending_document_interventions(
     let mut interventions = Vec::new();
 
     for row in rows {
-        if let Some(intervention) = build_document_intervention(pool, row).await? {
+        if let Some(intervention) =
+            build_document_intervention(pool, row, accounting_channel_type).await?
+        {
             interventions.push(intervention);
         }
     }
@@ -151,6 +158,7 @@ async fn pending_document_event_candidates(
 pub async fn build_document_intervention(
     pool: &DbPool,
     event: DocumentEventCandidate,
+    accounting_channel_type: Option<ChannelType>,
 ) -> anyhow::Result<Option<DocumentIntervention>> {
     let payload = event.payload.clone().unwrap_or_else(|| json!({}));
     let Some((audience, kind)) = classify_document_event(&event.event_type, &payload) else {
@@ -159,7 +167,13 @@ pub async fn build_document_intervention(
 
     let target = match audience {
         InterventionAudience::Sender => sender_target(pool, event.document_id).await?,
-        InterventionAudience::Accounting => accounting_target(pool).await?,
+        InterventionAudience::Accounting => {
+            if let Some(channel_type) = accounting_channel_type {
+                accounting_target(pool, channel_type).await?
+            } else {
+                None
+            }
+        }
         InterventionAudience::AuditOnly => None,
     };
 
@@ -352,7 +366,7 @@ async fn sender_target(
 ) -> anyhow::Result<Option<InterventionTarget>> {
     let target: Option<ArtifactTarget> = sqlx::query_as(
         r#"
-        SELECT channel_type, channel_identifier, profile_identifier
+        SELECT channel_type, channel_identifier, profile_identifier, metadata
         FROM document_artifacts
         WHERE document_id = $1
         ORDER BY created_at ASC
@@ -367,21 +381,25 @@ async fn sender_target(
         channel_type: target.channel_type,
         channel_identifier: target.channel_identifier,
         profile_identifier: target.profile_identifier,
+        metadata: target.metadata.unwrap_or_else(|| json!({})),
     }))
 }
 
-async fn accounting_target(pool: &DbPool) -> anyhow::Result<Option<InterventionTarget>> {
+async fn accounting_target(
+    pool: &DbPool,
+    channel_type: ChannelType,
+) -> anyhow::Result<Option<InterventionTarget>> {
     let target: Option<AccountingTarget> = sqlx::query_as(
         r#"
-        SELECT channel_type, channel_identifier
+        SELECT channel_type, channel_identifier, metadata
         FROM channel_identities
         WHERE active = TRUE
-        ORDER BY
-          CASE WHEN channel_type = 'TELEGRAM' THEN 0 ELSE 1 END,
-          created_at ASC
+          AND channel_type = $1
+        ORDER BY created_at ASC
         LIMIT 1
         "#,
     )
+    .bind(channel_type.as_str())
     .fetch_optional(pool)
     .await?;
 
@@ -389,6 +407,7 @@ async fn accounting_target(pool: &DbPool) -> anyhow::Result<Option<InterventionT
         channel_type: target.channel_type,
         channel_identifier: target.channel_identifier,
         profile_identifier: None,
+        metadata: target.metadata.unwrap_or_else(|| json!({})),
     }))
 }
 

@@ -26,9 +26,15 @@ session:
 worker:
   max_job_retries: 3
 
-telegram:
-  bot_token: "${TELEGRAM_BOT_TOKEN}"
-  webhook_url: null
+messaging:
+  provider: "${MESSAGING_PROVIDER}"
+  telegram:
+    bot_token: "${MESSAGING_TELEGRAM_BOT_TOKEN:-}"
+    webhook_url: null
+  slack:
+    bot_token: "${MESSAGING_SLACK_BOT_TOKEN:-}"
+    app_token: "${MESSAGING_SLACK_APP_TOKEN:-}"
+    allowed_channel_ids: []
 
 upload:
   storage_path: "${UPLOAD_STORAGE_PATH}"

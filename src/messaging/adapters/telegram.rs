@@ -507,7 +507,8 @@ pub async fn handle_telegram_callback_query(
         }),
     };
 
-    let notifier = crate::telegram::TelegramNotifier::new(state.config.telegram.bot_token.clone());
+    let notifier =
+        crate::telegram::TelegramNotifier::new(state.config.messaging.telegram.bot_token.clone());
     let response = match state.handle_document_action(&source, action).await {
         Ok(result) => result,
         Err(err) => {

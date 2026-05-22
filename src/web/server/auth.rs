@@ -839,9 +839,9 @@ pub async fn create_telegram_connect_link() -> Result<TelegramConnectLink, Serve
 
     let app_config =
         crate::config::load().map_err(|e| ServerFnError::new(format!("Config error: {}", e)))?;
-    let bot_token = std::env::var("TELEGRAM_BOT_TOKEN").unwrap_or_default();
+    let bot_token = std::env::var("MESSAGING_TELEGRAM_BOT_TOKEN").unwrap_or_default();
     let bot_token = if bot_token.trim().is_empty() {
-        app_config.telegram.bot_token.clone()
+        app_config.messaging.telegram.bot_token.clone()
     } else {
         bot_token
     };
@@ -852,7 +852,11 @@ pub async fn create_telegram_connect_link() -> Result<TelegramConnectLink, Serve
         ));
     }
 
-    verify_telegram_delivery_ready(&bot_token, app_config.telegram.webhook_url.as_deref()).await?;
+    verify_telegram_delivery_ready(
+        &bot_token,
+        app_config.messaging.telegram.webhook_url.as_deref(),
+    )
+    .await?;
 
     let ttl_seconds = 15 * 60;
     let store = crate::web::pool::get_ephemeral_store();
@@ -907,9 +911,9 @@ pub async fn get_telegram_connect_status(
 fn configured_telegram_bot_token(
     app_config: &crate::config::AppConfig,
 ) -> Result<String, ServerFnError> {
-    let env_token = std::env::var("TELEGRAM_BOT_TOKEN").unwrap_or_default();
+    let env_token = std::env::var("MESSAGING_TELEGRAM_BOT_TOKEN").unwrap_or_default();
     let token = if env_token.trim().is_empty() {
-        app_config.telegram.bot_token.clone()
+        app_config.messaging.telegram.bot_token.clone()
     } else {
         env_token
     };

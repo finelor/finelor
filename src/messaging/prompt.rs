@@ -239,8 +239,9 @@ mod tests {
 
     use super::*;
     use crate::config::{
-        AppConfig, DatabaseConfig, ExportConfig, LoggingConfig, OllamaConfig, OllamaModels,
-        SessionConfig, TelegramConfig, UploadConfig, WorkerConfig,
+        AppConfig, DatabaseConfig, ExportConfig, LoggingConfig, MessagingConfig, MessagingProvider,
+        OllamaConfig, OllamaModels, SessionConfig, SlackConfig, TelegramConfig, UploadConfig,
+        WorkerConfig,
     };
     use crate::db::ChannelType;
     use crate::messaging::conversation::{ConversationMessage, ConversationReferents};
@@ -465,9 +466,17 @@ mod tests {
                 secure: false,
             },
             worker: WorkerConfig { max_job_retries: 3 },
-            telegram: TelegramConfig {
-                bot_token: "dummy".to_string(),
-                webhook_url: None,
+            messaging: MessagingConfig {
+                provider: MessagingProvider::Telegram,
+                telegram: TelegramConfig {
+                    bot_token: "dummy".to_string(),
+                    webhook_url: None,
+                },
+                slack: SlackConfig {
+                    bot_token: String::new(),
+                    app_token: String::new(),
+                    allowed_channel_ids: Vec::new(),
+                },
             },
             upload: UploadConfig {
                 storage_path: "./.finelor/uploads".to_string(),

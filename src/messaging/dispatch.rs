@@ -87,7 +87,12 @@ impl GatewayEventDispatcher {
             return Ok(());
         };
 
-        let Some(intervention) = build_document_intervention(&self.state.pool, candidate).await?
+        let Some(intervention) = build_document_intervention(
+            &self.state.pool,
+            candidate,
+            self.state.config.messaging.provider.channel_type(),
+        )
+        .await?
         else {
             return Ok(());
         };

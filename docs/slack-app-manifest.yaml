@@ -1,0 +1,72 @@
+display_information:
+  name: Finelor Dev
+features:
+  app_home:
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  bot_user:
+    display_name: Finelor
+    always_online: false
+  slash_commands:
+    - command: /help
+      description: Show Finelor help
+      should_escape: false
+    - command: /overview
+      description: Show Finelor document status
+      should_escape: false
+    - command: /documents
+      description: List recent Finelor documents
+      should_escape: false
+    - command: /pending
+      description: List Finelor documents needing review
+      should_escape: false
+    - command: /ready
+      description: List Finelor documents ready for export
+      should_escape: false
+    - command: /last
+      description: Show the latest Finelor document
+      should_escape: false
+    - command: /why
+      description: Explain why a Finelor document is blocked
+      usage_hint: D000123
+      should_escape: false
+    - command: /review
+      description: Open Finelor review actions for a document
+      usage_hint: D000123
+      should_escape: false
+    - command: /retry
+      description: Reprocess a Finelor document
+      usage_hint: D000123
+      should_escape: false
+    - command: /export
+      description: Export Finelor documents
+      should_escape: false
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - channels:history
+      - channels:read
+      - chat:write
+      - commands
+      - files:read
+      - files:write
+      - groups:history
+      - groups:read
+      - im:history
+      - im:read
+      - mpim:history
+      - mpim:read
+settings:
+  event_subscriptions:
+    bot_events:
+      - app_mention
+      - message.channels
+      - message.groups
+      - message.im
+      - message.mpim
+  interactivity:
+    is_enabled: true
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false
