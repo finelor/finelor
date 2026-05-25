@@ -33,6 +33,21 @@ fn api_key_migration_contains_public_api_key_contracts() {
     assert!(migration.contains("created_by_user_id INTEGER NOT NULL REFERENCES users(id)"));
 }
 
+#[test]
+fn mcp_key_migration_contains_mcp_key_contracts() {
+    let migration = include_str!("../migrations/003_mcp_keys.sql");
+
+    assert!(migration.contains("CREATE TABLE IF NOT EXISTS mcp_keys"));
+    assert!(migration.contains("token TEXT NOT NULL UNIQUE"));
+    assert!(migration.contains("key_hash TEXT NOT NULL UNIQUE"));
+    assert!(migration.contains("capabilities TEXT NOT NULL DEFAULT"));
+    assert!(migration.contains("documents:read"));
+    assert!(migration.contains("documents:explain"));
+    assert!(migration.contains("revoked_at TEXT"));
+    assert!(migration.contains("hidden_at TEXT"));
+    assert!(migration.contains("created_by_user_id INTEGER NOT NULL REFERENCES users(id)"));
+}
+
 #[tokio::test]
 async fn embedded_sqlx_migrations_create_application_schema() {
     let pool = common::in_memory_pool().await;

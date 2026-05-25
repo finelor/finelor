@@ -19,6 +19,8 @@ pub mod ingestion;
 #[cfg(feature = "ssr")]
 pub mod kv;
 #[cfg(feature = "ssr")]
+pub mod mcp;
+#[cfg(feature = "ssr")]
 pub mod messaging;
 #[cfg(feature = "ssr")]
 pub mod orchestration;
@@ -26,6 +28,8 @@ pub mod orchestration;
 pub mod query;
 #[cfg(feature = "ssr")]
 pub mod queue;
+#[cfg(feature = "ssr")]
+pub mod security;
 #[cfg(feature = "ssr")]
 pub mod telegram;
 pub mod web;
