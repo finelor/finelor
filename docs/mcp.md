@@ -201,5 +201,6 @@ Unknown or malformed key capabilities fail closed.
 
 - MCP keys are separate from public API keys.
 - Revoked or removed MCP keys cannot authenticate.
-- Browser requests with invalid `Origin` values are rejected.
+- MCP can be called from any client location when the request uses an allowed Finelor host and a valid MCP key.
+- MCP does not use the web client's same-origin restriction.
 - The MCP endpoint does not expose write actions in the first version.

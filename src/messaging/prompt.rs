@@ -465,6 +465,18 @@ mod tests {
                 secure: false,
             },
             worker: WorkerConfig { max_job_retries: 3 },
+            web: crate::config::WebConfig {
+                allowed_hosts: vec![
+                    "localhost".to_string(),
+                    "127.0.0.1".to_string(),
+                    "::1".to_string(),
+                    "0.0.0.0".to_string(),
+                ],
+                allowed_origins: vec![
+                    "http://localhost:3000".to_string(),
+                    "http://127.0.0.1:3000".to_string(),
+                ],
+            },
             telegram: TelegramConfig {
                 bot_token: "dummy".to_string(),
                 webhook_url: None,

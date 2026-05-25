@@ -422,25 +422,43 @@ fn build_router(state: &AppState) -> Router<AppState> {
     let site_pkg_dir = state.leptos_options.site_pkg_dir.to_string();
     let pkg_path = std::path::Path::new(&site_root).join(&site_pkg_dir);
     let pkg_route = format!("/{}", site_pkg_dir.trim_matches('/'));
+    let web_config = state.config.web.clone();
 
     let router = Router::new()
         .route("/favicon.ico", get(favicon_handler))
         .nest_service(pkg_route.as_str(), ServeDir::new(pkg_path))
         .route("/health", get(health))
-        .route("/_events", get(events_handler))
+        .route(
+            "/_events",
+            get(events_handler).route_layer(axum::middleware::from_fn_with_state(
+                web_config.clone(),
+                finelor::security::validate_origin,
+            )),
+        )
         .route("/webhooks/telegram", post(telegram_webhook_handler))
         .route(
             "/_server_fn/{*fn_name}",
-            post(leptos_axum::handle_server_fns),
+            post(leptos_axum::handle_server_fns).route_layer(axum::middleware::from_fn_with_state(
+                web_config.clone(),
+                finelor::security::validate_origin,
+            )),
         )
         .route(
             "/_documents/{short_ref}/image",
-            get(get_document_image_handler),
+            get(get_document_image_handler).route_layer(axum::middleware::from_fn_with_state(
+                web_config.clone(),
+                finelor::security::validate_origin,
+            )),
         )
-        .merge(finelor::mcp::router(state.pool.clone()).with_state::<AppState>(()))
+        .merge(
+            finelor::mcp::router(state.pool.clone(), web_config.clone()).with_state::<AppState>(()),
+        )
         .nest("/api/v1", finelor::api::router());
 
-    finelor::web::mount_web_router(router, state)
+    finelor::web::mount_web_router(router, state).layer(axum::middleware::from_fn_with_state(
+        web_config,
+        finelor::security::validate_host,
+    ))
 }
 
 async fn favicon_handler() -> Response {

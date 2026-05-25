@@ -36,7 +36,17 @@ async fn create_test_api_key(pool: &sqlx::SqlitePool) -> String {
 }
 
 fn mcp_app(pool: sqlx::SqlitePool) -> Router {
-    finelor::mcp::router(pool)
+    finelor::mcp::router(pool, common::test_config().web)
+}
+
+fn mcp_app_with_hosts(pool: sqlx::SqlitePool, allowed_hosts: Vec<String>) -> Router {
+    finelor::mcp::router(
+        pool,
+        finelor::config::WebConfig {
+            allowed_hosts,
+            allowed_origins: vec![],
+        },
+    )
 }
 
 fn public_api_app(pool: sqlx::SqlitePool) -> Router {
@@ -59,10 +69,20 @@ async fn post_mcp(
     body: serde_json::Value,
     origin: Option<&str>,
 ) -> axum::response::Response {
+    post_mcp_with_host(app, token, body, "localhost", origin).await
+}
+
+async fn post_mcp_with_host(
+    app: Router,
+    token: Option<&str>,
+    body: serde_json::Value,
+    host: &str,
+    origin: Option<&str>,
+) -> axum::response::Response {
     let mut builder = axum::http::Request::builder()
         .method("POST")
         .uri("/mcp")
-        .header("Host", "localhost")
+        .header("Host", host)
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream");
     if let Some(token) = token {
@@ -317,7 +337,7 @@ async fn revoked_mcp_key_can_be_unrevoked() {
 }
 
 #[tokio::test]
-async fn mcp_rejects_invalid_origin() {
+async fn mcp_allows_arbitrary_origin_with_valid_host_and_key() {
     let pool = common::in_memory_pool().await;
     let token = create_test_mcp_key(&pool).await;
     let response = post_mcp(
@@ -330,6 +350,48 @@ async fn mcp_rejects_invalid_origin() {
             "params": {}
         }),
         Some("https://evil.example"),
+    )
+    .await;
+
+    assert!(response.status().is_success());
+}
+
+#[tokio::test]
+async fn mcp_accepts_configured_public_host() {
+    let pool = common::in_memory_pool().await;
+    let token = create_test_mcp_key(&pool).await;
+    let response = post_mcp_with_host(
+        mcp_app_with_hosts(pool, vec!["finelor.example".to_string()]),
+        Some(&token),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+            "params": {}
+        }),
+        "finelor.example",
+        None,
+    )
+    .await;
+
+    assert!(response.status().is_success());
+}
+
+#[tokio::test]
+async fn mcp_rejects_unconfigured_public_host() {
+    let pool = common::in_memory_pool().await;
+    let token = create_test_mcp_key(&pool).await;
+    let response = post_mcp_with_host(
+        mcp_app_with_hosts(pool, vec!["finelor.example".to_string()]),
+        Some(&token),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+            "params": {}
+        }),
+        "other.example",
+        None,
     )
     .await;
 

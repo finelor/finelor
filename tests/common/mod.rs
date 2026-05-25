@@ -143,6 +143,18 @@ pub fn test_config() -> finelor::config::AppConfig {
             secure: false,
         },
         worker: finelor::config::WorkerConfig { max_job_retries: 1 },
+        web: finelor::config::WebConfig {
+            allowed_hosts: vec![
+                "localhost".to_string(),
+                "127.0.0.1".to_string(),
+                "::1".to_string(),
+                "0.0.0.0".to_string(),
+            ],
+            allowed_origins: vec![
+                "http://localhost:3000".to_string(),
+                "http://127.0.0.1:3000".to_string(),
+            ],
+        },
         telegram: finelor::config::TelegramConfig {
             bot_token: "test-token".to_string(),
             webhook_url: None,

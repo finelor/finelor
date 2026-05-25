@@ -29,6 +29,8 @@ pub mod query;
 #[cfg(feature = "ssr")]
 pub mod queue;
 #[cfg(feature = "ssr")]
+pub mod security;
+#[cfg(feature = "ssr")]
 pub mod telegram;
 pub mod web;
 #[cfg(feature = "ssr")]

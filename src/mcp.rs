@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::{
+    config::WebConfig,
     db::{self, DbPool, McpKey},
     messaging::tools::{ReadOnlyToolCall, execute_read_only_tool},
 };
@@ -192,14 +193,14 @@ impl ServerHandler for FinelorMcpServer {
     }
 }
 
-pub fn router(pool: DbPool) -> Router {
+pub fn router(pool: DbPool, web_config: WebConfig) -> Router {
     let service_pool = pool.clone();
     let service = StreamableHttpService::new(
         move || Ok(FinelorMcpServer::new(service_pool.clone())),
         std::sync::Arc::new(LocalSessionManager::default()),
         StreamableHttpServerConfig::default()
-            .with_allowed_hosts(["localhost", "127.0.0.1", "::1", "0.0.0.0"])
-            .with_allowed_origins(["http://localhost:3000", "http://127.0.0.1:3000"])
+            .with_allowed_hosts(web_config.allowed_hosts)
+            .disable_allowed_origins()
             .with_stateful_mode(false)
             .with_json_response(true),
     );
