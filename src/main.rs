@@ -437,6 +437,7 @@ fn build_router(state: &AppState) -> Router<AppState> {
             "/_documents/{short_ref}/image",
             get(get_document_image_handler),
         )
+        .merge(finelor::mcp::router(state.pool.clone()).with_state::<AppState>(()))
         .nest("/api/v1", finelor::api::router());
 
     finelor::web::mount_web_router(router, state)

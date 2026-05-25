@@ -20,6 +20,10 @@ use crate::web::server::auth::{
     AuthUser, CompanyChannel, CreateTelegramConnectLink, DeleteCompanyChannel, Logout,
     get_session_user, get_telegram_channel_avatar, list_company_channels,
 };
+use crate::web::server::mcp_keys::{
+    CreateMcpKey, McpKeySummary, RemoveMcpKey, RevokeMcpKey, UnrevokeMcpKey, list_mcp_keys,
+    reveal_mcp_key,
+};
 use crate::web::server::settings::{CompanySettings, UpdateCompanySettings, get_company_settings};
 use icondata::{
     LuArrowUpRight, LuBot, LuBuilding2, LuCalendar, LuCheck, LuCopy, LuEye, LuFileText, LuLogOut,
@@ -56,6 +60,7 @@ enum SettingsTab {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ChannelSettingsTab {
     Telegram,
+    Mcp,
     Api,
 }
 
@@ -132,6 +137,473 @@ fn TelegramChannelAvatar(channel_id: i64, label: String) -> impl IntoView {
                 </Avatar>
             }.into_any(),
         }}
+    }
+}
+
+#[component]
+fn McpKeysPanel() -> impl IntoView {
+    let refresh_nonce = RwSignal::new(0_u64);
+    let create_action = ServerAction::<CreateMcpKey>::new();
+    let revoke_action = ServerAction::<RevokeMcpKey>::new();
+    let unrevoke_action = ServerAction::<UnrevokeMcpKey>::new();
+    let remove_action = ServerAction::<RemoveMcpKey>::new();
+    let created_token = RwSignal::<Option<String>>::new(None);
+    let copied = RwSignal::new(false);
+    let reveal_copied = RwSignal::new(false);
+    let create_modal_open = RwSignal::new(false);
+    let pending_reveal = RwSignal::<Option<McpKeySummary>>::new(None);
+    let pending_revoke = RwSignal::<Option<McpKeySummary>>::new(None);
+    let pending_unrevoke = RwSignal::<Option<McpKeySummary>>::new(None);
+    let pending_remove = RwSignal::<Option<McpKeySummary>>::new(None);
+
+    let keys = Resource::new(
+        move || refresh_nonce.get(),
+        |_| async move { list_mcp_keys().await },
+    );
+    let create_value = create_action.value();
+    let revoke_value = revoke_action.value();
+    let unrevoke_value = unrevoke_action.value();
+    let remove_value = remove_action.value();
+    let revealed_token = Resource::new(
+        move || pending_reveal.get().map(|key| key.id),
+        |mcp_key_id| async move {
+            match mcp_key_id {
+                Some(mcp_key_id) => reveal_mcp_key(mcp_key_id).await.map(Some),
+                None => Ok(None),
+            }
+        },
+    );
+
+    Effect::new(move || {
+        if let Some(Ok(created)) = create_value.get() {
+            created_token.set(Some(created.token));
+            create_modal_open.set(false);
+            refresh_nonce.update(|nonce| *nonce += 1);
+        }
+    });
+
+    Effect::new(move || {
+        if let Some(Ok(())) = revoke_value.get() {
+            pending_revoke.set(None);
+            refresh_nonce.update(|nonce| *nonce += 1);
+        }
+    });
+
+    Effect::new(move || {
+        if let Some(Ok(())) = unrevoke_value.get() {
+            pending_unrevoke.set(None);
+            refresh_nonce.update(|nonce| *nonce += 1);
+        }
+    });
+
+    Effect::new(move || {
+        if let Some(Ok(())) = remove_value.get() {
+            pending_remove.set(None);
+            refresh_nonce.update(|nonce| *nonce += 1);
+        }
+    });
+
+    view! {
+        <Stack top=Space::Md gap=Space::Md>
+            <Inline justify=Justify::Between stack_mobile=true>
+                <Stack gap=Space::None>
+                    <PanelTitle>"MCP keys"</PanelTitle>
+                    <FineText>"MCP keys used by AI agents to access Finelor"</FineText>
+                </Stack>
+                <ActionButton
+                    kind=ButtonKind::Primary
+                    on_click=move |_| create_modal_open.set(true)
+                >
+                    <Icon icon=LuPlus width="1rem" height="1rem" />
+                    "New MCP Key"
+                </ActionButton>
+            </Inline>
+
+            <Show when=move || create_value.get().as_ref().and_then(|result| result.as_ref().err()).is_some()>
+                <Alert kind=AlertKind::Error>
+                    {move || create_value
+                        .get()
+                        .as_ref()
+                        .and_then(|result| result.as_ref().err())
+                        .map(|err| format!("Could not create MCP key: {}", err))
+                        .unwrap_or_default()}
+                </Alert>
+            </Show>
+
+            <Show when=move || created_token.get().is_some()>
+                <Banner
+                    title="MCP key created".to_string()
+                    icon=LuCheck
+                    tone=Tone::Success
+                >
+                    <Stack gap=Space::Sm shrink=true>
+                        <div class="flex w-full flex-col gap-2 sm:flex-row">
+                            <input
+                                class="input input-bordered min-w-0 flex-1 font-mono text-sm"
+                                readonly
+                                prop:value=move || created_token.get().unwrap_or_default()
+                            />
+                            <ActionButton on_click=move |_| {
+                                if let Some(token) = created_token.get() {
+                                    copy_to_clipboard(&token);
+                                    copied.set(true);
+                                    run_after_ms(1_500, move || copied.set(false));
+                                }
+                            }>
+                                <Show
+                                    when=move || copied.get()
+                                    fallback=move || view! {
+                                        <Icon icon=LuCopy width="1rem" height="1rem" />
+                                        "Copy"
+                                    }
+                                >
+                                    <Icon icon=LuCheck width="1rem" height="1rem" />
+                                    "Copied"
+                                </Show>
+                            </ActionButton>
+                        </div>
+                    </Stack>
+                </Banner>
+            </Show>
+
+            <Show when=move || revoke_value.get().as_ref().and_then(|result| result.as_ref().err()).is_some()>
+                <Alert kind=AlertKind::Error>
+                    {move || revoke_value
+                        .get()
+                        .as_ref()
+                        .and_then(|result| result.as_ref().err())
+                        .map(|err| format!("Could not revoke MCP key: {}", err))
+                        .unwrap_or_default()}
+                </Alert>
+            </Show>
+
+            <Show when=move || unrevoke_value.get().as_ref().and_then(|result| result.as_ref().err()).is_some()>
+                <Alert kind=AlertKind::Error>
+                    {move || unrevoke_value
+                        .get()
+                        .as_ref()
+                        .and_then(|result| result.as_ref().err())
+                        .map(|err| format!("Could not unrevoke MCP key: {}", err))
+                        .unwrap_or_default()}
+                </Alert>
+            </Show>
+
+            <Show when=move || remove_value.get().as_ref().and_then(|result| result.as_ref().err()).is_some()>
+                <Alert kind=AlertKind::Error>
+                    {move || remove_value
+                        .get()
+                        .as_ref()
+                        .and_then(|result| result.as_ref().err())
+                        .map(|err| format!("Could not remove MCP key: {}", err))
+                        .unwrap_or_default()}
+                </Alert>
+            </Show>
+
+            <Suspense fallback=|| view! { <LoadingCard message="Loading MCP keys..." /> }>
+                {move || match keys.get() {
+                    Some(Ok(keys)) if keys.is_empty() => view! {
+                        <Inline align=Align::Start gap=Space::Md surface=InlineSurface::Panel>
+                            <Avatar>
+                                <Icon icon=LuBot width="1.1rem" height="1.1rem" />
+                            </Avatar>
+                            <Stack gap=Space::None shrink=true>
+                                <PanelTitle>"No MCP keys"</PanelTitle>
+                                <FineText>"Create a key before connecting AI agents to Finelor"</FineText>
+                            </Stack>
+                        </Inline>
+                    }.into_any(),
+                    Some(Ok(keys)) => view! {
+                        <Stack gap=Space::Sm>
+                            {keys
+                                .into_iter()
+                                .map(|key| {
+                                    let key_for_revoke = key.clone();
+                                    let key_for_unrevoke = key.clone();
+                                    let key_for_remove = key.clone();
+                                    let key_for_reveal = key.clone();
+                                    let revoked = key.revoked_at.is_some();
+                                    let key_action = if revoked {
+                                        view! {
+                                            <Inline gap=Space::Sm>
+                                                <IconButton
+                                                    label="Unrevoke"
+                                                    kind=ButtonKind::Soft
+                                                    size=ButtonSize::Sm
+                                                    on_click=move |_| pending_unrevoke.set(Some(key_for_unrevoke.clone()))
+                                                >
+                                                    <Icon icon=LuRotateCcw width="1rem" height="1rem" />
+                                                </IconButton>
+                                                <IconButton
+                                                    label="Remove"
+                                                    kind=ButtonKind::SoftDanger
+                                                    size=ButtonSize::Sm
+                                                    on_click=move |_| pending_remove.set(Some(key_for_remove.clone()))
+                                                >
+                                                    <Icon icon=LuTrash2 width="1rem" height="1rem" />
+                                                </IconButton>
+                                            </Inline>
+                                        }.into_any()
+                                    } else {
+                                        view! {
+                                            <Inline gap=Space::Sm>
+                                                <IconButton
+                                                    label="Revoke"
+                                                    kind=ButtonKind::SoftDanger
+                                                    size=ButtonSize::Sm
+                                                    on_click=move |_| pending_revoke.set(Some(key_for_revoke.clone()))
+                                                >
+                                                    <Icon icon=LuX width="1rem" height="1rem" />
+                                                </IconButton>
+                                            </Inline>
+                                        }.into_any()
+                                    };
+                                    view! {
+                                        <Inline align=Align::Start justify=Justify::Between gap=Space::Md surface=InlineSurface::Panel>
+                                            <Stack gap=Space::None shrink=true>
+                                                <Inline gap=Space::Sm wrap=true>
+                                                    <InlinePanelTitle>{key.name.clone()}</InlinePanelTitle>
+                                                    <Badge
+                                                        tone=if revoked { Tone::Warning } else { Tone::Success }
+                                                        style=BadgeStyle::Soft
+                                                    >
+                                                        {if revoked { "Revoked" } else { "Active" }}
+                                                    </Badge>
+                                                </Inline>
+                                                <FineText>{format!("Created {} - Last used {}", format_api_key_created_at(key.created_at), format_api_key_timestamp(key.last_used_at))}</FineText>
+                                            </Stack>
+                                            <Inline gap=Space::Sm>
+                                                <IconButton
+                                                    label="Reveal"
+                                                    kind=ButtonKind::Soft
+                                                    size=ButtonSize::Sm
+                                                    on_click=move |_| {
+                                                        reveal_copied.set(false);
+                                                        pending_reveal.set(Some(key_for_reveal.clone()));
+                                                    }
+                                                >
+                                                    <Icon icon=LuEye width="1rem" height="1rem" />
+                                                </IconButton>
+                                                {key_action}
+                                            </Inline>
+                                        </Inline>
+                                    }
+                                })
+                                .collect_view()}
+                        </Stack>
+                    }.into_any(),
+                    Some(Err(err)) => view! {
+                        <Alert kind=AlertKind::Error>{format!("Failed to load MCP keys: {}", err)}</Alert>
+                    }.into_any(),
+                    None => view! { <HiddenPlaceholder /> }.into_any(),
+                }}
+            </Suspense>
+
+            <Show when=move || create_modal_open.get()>
+                <Modal close_label="Cancel creating MCP key" on_close=move |_| create_modal_open.set(false)>
+                    <ModalCloseButton label="Cancel creating MCP key" on_click=move |_| create_modal_open.set(false)>
+                        <Icon icon=LuX width="1.25rem" height="1.25rem" />
+                    </ModalCloseButton>
+                    <ModalHeader>
+                        <Inline gap=Space::Md shrink=true>
+                            <Avatar>
+                                <Icon icon=LuBot width="1.1rem" height="1.1rem" />
+                            </Avatar>
+                            <div>
+                                <PanelTitle>"New MCP Key"</PanelTitle>
+                                <FineText>"AI agent authentication"</FineText>
+                            </div>
+                        </Inline>
+                    </ModalHeader>
+                    <ModalTitle>"Create a new MCP key"</ModalTitle>
+                    <BodyText>"The generated key can be revealed later from this settings page."</BodyText>
+                    <ActionForm action=create_action>
+                        <Stack top=Space::Md gap=Space::Md>
+                            <FormField label="Key name">
+                                <TextInput name="name" placeholder="Claude Desktop" required=true />
+                            </FormField>
+                            <ModalActions>
+                                <ActionButton on_click=move |_| create_modal_open.set(false)>"Cancel"</ActionButton>
+                                <Button kind=ButtonKind::Primary button_type=ButtonType::Submit>
+                                    <Icon icon=LuPlus width="1rem" height="1rem" />
+                                    "Create key"
+                                </Button>
+                            </ModalActions>
+                        </Stack>
+                    </ActionForm>
+                </Modal>
+            </Show>
+
+            <Show when=move || pending_reveal.get().is_some()>
+                {move || pending_reveal
+                    .get()
+                    .map(|key| view! {
+                        <Modal close_label="Close MCP key reveal" on_close=move |_| pending_reveal.set(None)>
+                            <ModalCloseButton label="Close MCP key reveal" on_click=move |_| pending_reveal.set(None)>
+                                <Icon icon=LuX width="1.25rem" height="1.25rem" />
+                            </ModalCloseButton>
+                            <ModalHeader>
+                                <Inline gap=Space::Md shrink=true>
+                                    <Avatar><Icon icon=LuEye width="1.1rem" height="1.1rem" /></Avatar>
+                                    <div>
+                                        <PanelTitle>"Reveal MCP key"</PanelTitle>
+                                        <FineText>{key.name.clone()}</FineText>
+                                    </div>
+                                </Inline>
+                            </ModalHeader>
+                            <ModalTitle>"MCP key"</ModalTitle>
+                            <Suspense fallback=move || view! {
+                                <div class="flex items-center gap-3 text-sm text-base-content/70">
+                                    <span class="loading loading-spinner loading-sm"></span>
+                                    <span>"Loading key..."</span>
+                                </div>
+                            }>
+                                {move || match revealed_token.get() {
+                                    Some(Ok(Some(token))) => view! {
+                                        <Stack top=Space::Md gap=Space::Md>
+                                            <div class="flex w-full flex-col gap-2 sm:flex-row">
+                                                <input
+                                                    class="input input-bordered min-w-0 flex-1 font-mono text-sm"
+                                                    readonly
+                                                    prop:value=token.clone()
+                                                />
+                                                <ActionButton on_click=move |_| {
+                                                    copy_to_clipboard(&token);
+                                                    reveal_copied.set(true);
+                                                    run_after_ms(1_500, move || reveal_copied.set(false));
+                                                }>
+                                                    <Show
+                                                        when=move || reveal_copied.get()
+                                                        fallback=move || view! {
+                                                            <Icon icon=LuCopy width="1rem" height="1rem" />
+                                                            "Copy"
+                                                        }
+                                                    >
+                                                        <Icon icon=LuCheck width="1rem" height="1rem" />
+                                                        "Copied"
+                                                    </Show>
+                                                </ActionButton>
+                                            </div>
+                                            <ModalActions>
+                                                <ActionButton on_click=move |_| pending_reveal.set(None)>"Close"</ActionButton>
+                                            </ModalActions>
+                                        </Stack>
+                                    }.into_any(),
+                                    Some(Ok(None)) => view! {
+                                        <Alert kind=AlertKind::Error>"MCP key not found."</Alert>
+                                    }.into_any(),
+                                    Some(Err(err)) => view! {
+                                        <Alert kind=AlertKind::Error>{format!("Could not reveal MCP key: {}", err)}</Alert>
+                                    }.into_any(),
+                                    None => view! { <HiddenPlaceholder /> }.into_any(),
+                                }}
+                            </Suspense>
+                        </Modal>
+                    }.into_any())
+                    .unwrap_or_else(|| ().into_any())}
+            </Show>
+
+            <Show when=move || pending_revoke.get().is_some()>
+                {move || pending_revoke
+                    .get()
+                    .map(|key| view! {
+                        <Modal close_label="Cancel revoking MCP key" on_close=move |_| pending_revoke.set(None)>
+                            <ModalCloseButton label="Cancel revoking MCP key" on_click=move |_| pending_revoke.set(None)>
+                                <Icon icon=LuX width="1.25rem" height="1.25rem" />
+                            </ModalCloseButton>
+                            <ModalHeader>
+                                <Inline gap=Space::Md shrink=true>
+                                    <Avatar><Icon icon=LuX width="1.1rem" height="1.1rem" /></Avatar>
+                                    <div>
+                                        <PanelTitle>"Revoke MCP key"</PanelTitle>
+                                        <FineText>{key.name.clone()}</FineText>
+                                    </div>
+                                </Inline>
+                            </ModalHeader>
+                            <ModalTitle>"Revoke this key?"</ModalTitle>
+                            <BodyText>"AI agents using this key will immediately lose MCP access."</BodyText>
+                            <ActionForm action=revoke_action>
+                                <input type="hidden" name="mcp_key_id" value=key.id.to_string() />
+                                <ModalActions>
+                                    <ActionButton on_click=move |_| pending_revoke.set(None)>"Cancel"</ActionButton>
+                                    <Button kind=ButtonKind::SoftDanger button_type=ButtonType::Submit>
+                                        <Icon icon=LuX width="1rem" height="1rem" />
+                                        "Revoke"
+                                    </Button>
+                                </ModalActions>
+                            </ActionForm>
+                        </Modal>
+                    }.into_any())
+                    .unwrap_or_else(|| ().into_any())}
+            </Show>
+
+            <Show when=move || pending_unrevoke.get().is_some()>
+                {move || pending_unrevoke
+                    .get()
+                    .map(|key| view! {
+                        <Modal close_label="Cancel unrevoking MCP key" on_close=move |_| pending_unrevoke.set(None)>
+                            <ModalCloseButton label="Cancel unrevoking MCP key" on_click=move |_| pending_unrevoke.set(None)>
+                                <Icon icon=LuX width="1.25rem" height="1.25rem" />
+                            </ModalCloseButton>
+                            <ModalHeader>
+                                <Inline gap=Space::Md shrink=true>
+                                    <Avatar><Icon icon=LuRotateCcw width="1.1rem" height="1.1rem" /></Avatar>
+                                    <div>
+                                        <PanelTitle>"Unrevoke MCP key"</PanelTitle>
+                                        <FineText>{key.name.clone()}</FineText>
+                                    </div>
+                                </Inline>
+                            </ModalHeader>
+                            <ModalTitle>"Restore this key?"</ModalTitle>
+                            <BodyText>"AI agents using this key will be able to access MCP again."</BodyText>
+                            <ActionForm action=unrevoke_action>
+                                <input type="hidden" name="mcp_key_id" value=key.id.to_string() />
+                                <ModalActions>
+                                    <ActionButton on_click=move |_| pending_unrevoke.set(None)>"Cancel"</ActionButton>
+                                    <Button kind=ButtonKind::Primary button_type=ButtonType::Submit>
+                                        <Icon icon=LuRotateCcw width="1rem" height="1rem" />
+                                        "Unrevoke"
+                                    </Button>
+                                </ModalActions>
+                            </ActionForm>
+                        </Modal>
+                    }.into_any())
+                    .unwrap_or_else(|| ().into_any())}
+            </Show>
+
+            <Show when=move || pending_remove.get().is_some()>
+                {move || pending_remove
+                    .get()
+                    .map(|key| view! {
+                        <Modal close_label="Cancel removing MCP key" on_close=move |_| pending_remove.set(None)>
+                            <ModalCloseButton label="Cancel removing MCP key" on_click=move |_| pending_remove.set(None)>
+                                <Icon icon=LuX width="1.25rem" height="1.25rem" />
+                            </ModalCloseButton>
+                            <ModalHeader>
+                                <Inline gap=Space::Md shrink=true>
+                                    <Avatar><Icon icon=LuTrash2 width="1.1rem" height="1.1rem" /></Avatar>
+                                    <div>
+                                        <PanelTitle>"Remove MCP key"</PanelTitle>
+                                        <FineText>{key.name.clone()}</FineText>
+                                    </div>
+                                </Inline>
+                            </ModalHeader>
+                            <ModalTitle>"Remove this revoked key?"</ModalTitle>
+                            <BodyText>"The key stays revoked and will no longer appear in this list."</BodyText>
+                            <ActionForm action=remove_action>
+                                <input type="hidden" name="mcp_key_id" value=key.id.to_string() />
+                                <ModalActions>
+                                    <ActionButton on_click=move |_| pending_remove.set(None)>"Cancel"</ActionButton>
+                                    <Button kind=ButtonKind::SoftDanger button_type=ButtonType::Submit>
+                                        <Icon icon=LuTrash2 width="1rem" height="1rem" />
+                                        "Remove"
+                                    </Button>
+                                </ModalActions>
+                            </ActionForm>
+                        </Modal>
+                    }.into_any())
+                    .unwrap_or_else(|| ().into_any())}
+            </Show>
+        </Stack>
     }
 }
 
@@ -823,6 +1295,13 @@ pub fn Settings() -> impl IntoView {
                                                                         "Telegram"
                                                                     </SettingsSubTabButton>
                                                                     <SettingsSubTabButton
+                                                                        active=move || active_channel_tab.get() == ChannelSettingsTab::Mcp
+                                                                        on_click=move |_| active_channel_tab.set(ChannelSettingsTab::Mcp)
+                                                                    >
+                                                                        <Icon icon=LuBot width="1rem" height="1rem" />
+                                                                        "MCP"
+                                                                    </SettingsSubTabButton>
+                                                                    <SettingsSubTabButton
                                                                         active=move || active_channel_tab.get() == ChannelSettingsTab::Api
                                                                         on_click=move |_| active_channel_tab.set(ChannelSettingsTab::Api)
                                                                     >
@@ -835,7 +1314,12 @@ pub fn Settings() -> impl IntoView {
                                                                     <Show
                                                                         when=move || active_channel_tab.get() == ChannelSettingsTab::Telegram
                                                                         fallback=move || view! {
-                                                                            <ApiKeysPanel />
+                                                                            <Show
+                                                                                when=move || active_channel_tab.get() == ChannelSettingsTab::Mcp
+                                                                                fallback=move || view! { <ApiKeysPanel /> }
+                                                                            >
+                                                                                <McpKeysPanel />
+                                                                            </Show>
                                                                         }
                                                                     >
                                                                         <Stack top=Space::Md gap=Space::Md>

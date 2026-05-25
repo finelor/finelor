@@ -14,6 +14,8 @@ pub type DbRow = SqliteRow;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 const API_KEY_TOKEN_PREFIX: &str = "finelor_";
+const MCP_KEY_TOKEN_PREFIX: &str = "finelor_mcp_";
+pub const DEFAULT_MCP_CAPABILITIES: &str = r#"["documents:read","documents:explain"]"#;
 
 pub async fn create_pool(config: &DatabaseConfig) -> AppResult<DbPool> {
     let options = SqliteConnectOptions::from_str(&config.url())?
@@ -76,6 +78,28 @@ pub struct CreatedApiKey {
     pub token: String,
 }
 
+#[derive(Debug, Clone, FromRow)]
+pub struct McpKey {
+    pub id: i64,
+    pub name: String,
+    pub token: String,
+    pub key_prefix: String,
+    pub key_hash: String,
+    pub capabilities: String,
+    pub created_by_user_id: i64,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+    pub hidden_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CreatedMcpKey {
+    pub record: McpKey,
+    pub token: String,
+}
+
 pub fn hash_api_key(token: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(token.as_bytes());
@@ -95,6 +119,19 @@ pub fn generate_api_key_token() -> String {
     format!(
         "{}{}",
         API_KEY_TOKEN_PREFIX,
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+    )
+}
+
+pub fn generate_mcp_key_token() -> String {
+    use base64::Engine;
+
+    let mut bytes = [0_u8; 32];
+    bytes[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+    bytes[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+    format!(
+        "{}{}",
+        MCP_KEY_TOKEN_PREFIX,
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
     )
 }
@@ -226,6 +263,148 @@ pub async fn authenticate_api_key(
         sqlx::query(
             r#"
             UPDATE api_keys
+            SET last_used_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $1
+            "#,
+        )
+        .bind(key.id)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok(key)
+}
+
+pub async fn create_mcp_key(
+    pool: &DbPool,
+    name: &str,
+    created_by_user_id: i64,
+) -> Result<CreatedMcpKey, sqlx::Error> {
+    let token = generate_mcp_key_token();
+    let key_hash = hash_api_key(&token);
+    let key_prefix = api_key_prefix(&token);
+    let record = sqlx::query_as::<_, McpKey>(
+        r#"
+        INSERT INTO mcp_keys (name, token, key_prefix, key_hash, capabilities, created_by_user_id)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING id, name, token, key_prefix, key_hash, capabilities, created_by_user_id, last_used_at, revoked_at, hidden_at, created_at, updated_at
+        "#,
+    )
+    .bind(name)
+    .bind(&token)
+    .bind(&key_prefix)
+    .bind(&key_hash)
+    .bind(DEFAULT_MCP_CAPABILITIES)
+    .bind(created_by_user_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(CreatedMcpKey { record, token })
+}
+
+pub async fn list_visible_mcp_keys(pool: &DbPool) -> Result<Vec<McpKey>, sqlx::Error> {
+    sqlx::query_as::<_, McpKey>(
+        r#"
+        SELECT id, name, token, key_prefix, key_hash, capabilities, created_by_user_id, last_used_at, revoked_at, hidden_at, created_at, updated_at
+        FROM mcp_keys
+        WHERE hidden_at IS NULL
+        ORDER BY created_at DESC, id DESC
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+}
+
+pub async fn reveal_mcp_key_token(
+    pool: &DbPool,
+    mcp_key_id: i64,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        r#"
+        SELECT token
+        FROM mcp_keys
+        WHERE id = $1 AND hidden_at IS NULL
+        LIMIT 1
+        "#,
+    )
+    .bind(mcp_key_id)
+    .fetch_optional(pool)
+    .await
+}
+
+pub async fn revoke_mcp_key(pool: &DbPool, mcp_key_id: i64) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        r#"
+        UPDATE mcp_keys
+        SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1 AND hidden_at IS NULL
+        "#,
+    )
+    .bind(mcp_key_id)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn unrevoke_mcp_key(pool: &DbPool, mcp_key_id: i64) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        r#"
+        UPDATE mcp_keys
+        SET revoked_at = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1 AND hidden_at IS NULL
+        "#,
+    )
+    .bind(mcp_key_id)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn hide_mcp_key(pool: &DbPool, mcp_key_id: i64) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        r#"
+        UPDATE mcp_keys
+        SET hidden_at = COALESCE(hidden_at, CURRENT_TIMESTAMP),
+            revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1
+        "#,
+    )
+    .bind(mcp_key_id)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn authenticate_mcp_key(
+    pool: &DbPool,
+    token: &str,
+) -> Result<Option<McpKey>, sqlx::Error> {
+    let key_hash = hash_api_key(token);
+    let mut tx = pool.begin().await?;
+    let key = sqlx::query_as::<_, McpKey>(
+        r#"
+        SELECT id, name, token, key_prefix, key_hash, capabilities, created_by_user_id, last_used_at, revoked_at, hidden_at, created_at, updated_at
+        FROM mcp_keys
+        WHERE key_hash = $1 AND revoked_at IS NULL AND hidden_at IS NULL
+        LIMIT 1
+        "#,
+    )
+    .bind(key_hash)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    if let Some(ref key) = key {
+        sqlx::query(
+            r#"
+            UPDATE mcp_keys
             SET last_used_at = CURRENT_TIMESTAMP,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = $1

@@ -130,6 +130,11 @@ Notes:
 ## Documentation
 Project documentation lives in [`docs/`](docs/).
 
+Finelor also exposes integration interfaces:
+
+- Public API endpoints are available for API-key authenticated document ingestion and document queries. See [`docs/api.md`](docs/api.md).
+- MCP server support is available for AI agents to query Finelor document information with MCP-key authentication. See [`docs/mcp.md`](docs/mcp.md).
+
 ## Contribution
 
 We welcome contributions.

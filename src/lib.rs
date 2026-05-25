@@ -19,6 +19,8 @@ pub mod ingestion;
 #[cfg(feature = "ssr")]
 pub mod kv;
 #[cfg(feature = "ssr")]
+pub mod mcp;
+#[cfg(feature = "ssr")]
 pub mod messaging;
 #[cfg(feature = "ssr")]
 pub mod orchestration;
