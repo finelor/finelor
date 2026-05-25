@@ -221,7 +221,7 @@ fn telegram_username(metadata: Option<&serde_json::Value>) -> Option<String> {
         .map(|value| value.trim_start_matches('@').to_string())
 }
 
-#[server(Signup, "/api")]
+#[server(Signup, "/_server_fn")]
 pub async fn signup(
     full_name: String,
     email: String,
@@ -314,7 +314,7 @@ pub async fn signup(
     Ok(user.id.to_string())
 }
 
-#[server(Login, "/api")]
+#[server(Login, "/_server_fn")]
 pub async fn login(email: String, password: String) -> Result<String, ServerFnError> {
     let headers: HeaderMap = leptos_axum::extract()
         .await
@@ -367,7 +367,7 @@ pub async fn login(email: String, password: String) -> Result<String, ServerFnEr
     Ok(user.id.to_string())
 }
 
-#[server(Logout, "/api")]
+#[server(Logout, "/_server_fn")]
 pub async fn logout() -> Result<(), ServerFnError> {
     let headers: HeaderMap = leptos_axum::extract()
         .await
@@ -423,7 +423,7 @@ pub struct MonthlyCloseItem {
     pub closed: bool,
 }
 
-#[server(GetDashboardSummary, "/api")]
+#[server(GetDashboardSummary, "/_server_fn")]
 pub async fn get_dashboard_summary() -> Result<DashboardSummary, ServerFnError> {
     let pool = pool();
     let session: Session = leptos_axum::extract()
@@ -641,7 +641,7 @@ async fn query_documents(
         .collect())
 }
 
-#[server(CompleteCompanyOnboarding, "/api")]
+#[server(CompleteCompanyOnboarding, "/_server_fn")]
 pub async fn complete_company_onboarding(company_name: String) -> Result<(), ServerFnError> {
     let pool = pool();
     let session: Session = leptos_axum::extract()
@@ -669,7 +669,7 @@ pub async fn complete_company_onboarding(company_name: String) -> Result<(), Ser
     Ok(())
 }
 
-#[server(GetSessionUser, "/api")]
+#[server(GetSessionUser, "/_server_fn")]
 pub async fn get_session_user() -> Result<Option<AuthUser>, ServerFnError> {
     let pool = pool();
     let session: Session = leptos_axum::extract()
@@ -709,7 +709,7 @@ pub async fn get_session_user() -> Result<Option<AuthUser>, ServerFnError> {
     }))
 }
 
-#[server(ListCompanyChannels, "/api")]
+#[server(ListCompanyChannels, "/_server_fn")]
 pub async fn list_company_channels() -> Result<Vec<CompanyChannel>, ServerFnError> {
     let pool = pool();
     let session: Session = leptos_axum::extract()
@@ -736,7 +736,7 @@ pub async fn list_company_channels() -> Result<Vec<CompanyChannel>, ServerFnErro
         .collect())
 }
 
-#[server(GetTelegramChannelAvatar, "/api")]
+#[server(GetTelegramChannelAvatar, "/_server_fn")]
 pub async fn get_telegram_channel_avatar(channel_id: i64) -> Result<Option<String>, ServerFnError> {
     let pool = pool();
     let session: Session = leptos_axum::extract()
@@ -784,7 +784,7 @@ pub async fn get_telegram_channel_avatar(channel_id: i64) -> Result<Option<Strin
     Ok(Some(data_url))
 }
 
-#[server(DeleteCompanyChannel, "/api")]
+#[server(DeleteCompanyChannel, "/_server_fn")]
 pub async fn delete_company_channel(channel_id: i64) -> Result<(), ServerFnError> {
     let pool = pool();
     let session: Session = leptos_axum::extract()
@@ -803,7 +803,7 @@ pub async fn delete_company_channel(channel_id: i64) -> Result<(), ServerFnError
     }
 }
 
-#[server(ConnectTelegramChannel, "/api")]
+#[server(ConnectTelegramChannel, "/_server_fn")]
 pub async fn connect_telegram_channel(chat_id: String) -> Result<String, ServerFnError> {
     let pool = pool();
     let session: Session = leptos_axum::extract()
@@ -822,7 +822,7 @@ pub async fn connect_telegram_channel(chat_id: String) -> Result<String, ServerF
     connect_telegram_for_workspace(&pool, workspace_id, parsed).await
 }
 
-#[server(CreateTelegramConnectLink, "/api")]
+#[server(CreateTelegramConnectLink, "/_server_fn")]
 pub async fn create_telegram_connect_link() -> Result<TelegramConnectLink, ServerFnError> {
     let session: Session = leptos_axum::extract()
         .await
@@ -885,7 +885,7 @@ pub async fn create_telegram_connect_link() -> Result<TelegramConnectLink, Serve
     })
 }
 
-#[server(GetTelegramConnectStatus, "/api")]
+#[server(GetTelegramConnectStatus, "/_server_fn")]
 pub async fn get_telegram_connect_status(
     connect_id: String,
 ) -> Result<TelegramConnectStatus, ServerFnError> {
@@ -1168,7 +1168,7 @@ pub struct TransactionsResponse {
     pub completion_rate: i64,
 }
 
-#[server(GetDocumentList, "/api")]
+#[server(GetDocumentList, "/_server_fn")]
 pub async fn get_document_list(
     month: Option<String>,
     status_filter: Option<String>,
@@ -1273,7 +1273,7 @@ pub struct AccountingRow {
     pub is_debit: Option<bool>,
 }
 
-#[server(GetDocumentDetails, "/api")]
+#[server(GetDocumentDetails, "/_server_fn")]
 pub async fn get_document_details(
     short_ref: String,
 ) -> Result<Option<DocumentDetails>, ServerFnError> {
@@ -1434,7 +1434,7 @@ pub async fn get_document_details(
         mime_type: r.try_get("mime_type").ok(),
         original_path: r.try_get("original_path").ok(),
         image_url: Some(format!(
-            "/api/documents/{}/image",
+            "/_documents/{}/image",
             r.try_get::<String, _>("short_ref").unwrap_or_default()
         )),
         supplier_name: r.try_get("supplier_name").ok(),

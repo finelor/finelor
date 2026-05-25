@@ -43,7 +43,7 @@ where
     {
         use wasm_bindgen::{JsCast, closure::Closure};
 
-        let event_source = web_sys::EventSource::new("/api/events").ok()?;
+        let event_source = web_sys::EventSource::new("/_events").ok()?;
         let on_open = Closure::wrap(Box::new(move |_event: web_sys::Event| {
             on_open();
         }) as Box<dyn FnMut(web_sys::Event)>);

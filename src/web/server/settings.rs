@@ -31,7 +31,7 @@ async fn require_session_workspace_id(session: &Session) -> Result<uuid::Uuid, S
     Ok(crate::workspace::active_workspace_id())
 }
 
-#[server(GetCompanySettings, "/api")]
+#[server(GetCompanySettings, "/_server_fn")]
 pub async fn get_company_settings() -> Result<CompanySettings, ServerFnError> {
     let pool = pool();
     let session: Session = leptos_axum::extract()
@@ -91,7 +91,7 @@ pub async fn get_company_settings() -> Result<CompanySettings, ServerFnError> {
     })
 }
 
-#[server(UpdateCompanySettings, "/api")]
+#[server(UpdateCompanySettings, "/_server_fn")]
 pub async fn update_company_settings(
     display_name: String,
     org_nr: Option<String>,

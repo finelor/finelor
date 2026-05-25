@@ -1,6 +1,8 @@
 #[cfg(feature = "ssr")]
 pub mod agents;
 #[cfg(feature = "ssr")]
+pub mod api;
+#[cfg(feature = "ssr")]
 pub mod confidence;
 #[cfg(feature = "ssr")]
 pub mod config;

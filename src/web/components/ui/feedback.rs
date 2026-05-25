@@ -204,6 +204,7 @@ impl BannerProminence {
 
 #[component]
 pub fn Banner(
+    #[prop(optional)] children: Option<Children>,
     title: String,
     #[prop(optional)] subtitle: Option<String>,
     icon: IconData,
@@ -231,11 +232,12 @@ pub fn Banner(
             <div class=icon_class>
                 <Icon icon=icon width="1.25rem" height="1.25rem" />
             </div>
-            <div class="min-w-0">
+            <div class="min-w-0 w-full flex-1">
                 <p class=title_class>{title}</p>
                 <Show when=move || has_subtitle>
                     <p class=subtitle_class>{subtitle_text.clone()}</p>
                 </Show>
+                {children.map(|children| view! { <div class="mt-3">{children()}</div> })}
             </div>
             <Show when=move || has_trailing_icon>
                 <div class=trailing_class>

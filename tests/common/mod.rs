@@ -292,7 +292,7 @@ impl TestContext {
             .with_signed(Key::from(session_secret.as_bytes()));
         let app = axum::Router::new()
             .route(
-                "/api/{*fn_name}",
+                "/_server_fn/{*fn_name}",
                 axum::routing::post(leptos_axum::handle_server_fns),
             )
             .layer(session_layer);

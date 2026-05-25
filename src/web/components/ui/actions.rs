@@ -125,14 +125,16 @@ pub fn IconButton(
     #[prop(default = ButtonSize::Md)] size: ButtonSize,
 ) -> impl IntoView {
     view! {
-        <button
-            type="button"
-            class=button_class(kind, size, false, true)
-            aria-label=label
-            on:click=on_click
-        >
-            {children()}
-        </button>
+        <div class="tooltip tooltip-top" data-tip=label>
+            <button
+                type="button"
+                class=button_class(kind, size, false, true)
+                aria-label=label
+                on:click=on_click
+            >
+                {children()}
+            </button>
+        </div>
     }
 }
 

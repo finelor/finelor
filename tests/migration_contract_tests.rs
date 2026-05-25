@@ -7,7 +7,6 @@ fn workspace_baseline_migration_contains_workspace_only_contracts() {
     assert!(!migration.contains("workspace_id"));
     assert!(!migration.contains("company_id"));
     assert!(!migration.contains("CREATE TABLE IF NOT EXISTS companies"));
-    assert!(!migration.contains("api_keys"));
     assert!(!migration.contains("finelor_schema_migrations"));
     assert!(migration.contains("CREATE TABLE IF NOT EXISTS channel_identities"));
     assert!(migration.contains("CREATE TABLE IF NOT EXISTS document_artifacts"));
@@ -20,6 +19,18 @@ fn workspace_baseline_migration_contains_workspace_only_contracts() {
     assert!(
         migration.contains("UNIQUE INDEX IF NOT EXISTS idx_document_interactions_pending_actor")
     );
+}
+
+#[test]
+fn api_key_migration_contains_public_api_key_contracts() {
+    let migration = include_str!("../migrations/002_api_keys.sql");
+
+    assert!(migration.contains("CREATE TABLE IF NOT EXISTS api_keys"));
+    assert!(migration.contains("token TEXT NOT NULL UNIQUE"));
+    assert!(migration.contains("key_hash TEXT NOT NULL UNIQUE"));
+    assert!(migration.contains("revoked_at TEXT"));
+    assert!(migration.contains("hidden_at TEXT"));
+    assert!(migration.contains("created_by_user_id INTEGER NOT NULL REFERENCES users(id)"));
 }
 
 #[tokio::test]
