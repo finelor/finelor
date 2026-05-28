@@ -902,7 +902,7 @@ fn ApiKeysPanel() -> impl IntoView {
                         </Inline>
                     </ModalHeader>
                     <ModalTitle>"Create a new API key"</ModalTitle>
-                    <BodyText>"The generated key will only be shown once."</BodyText>
+                    <BodyText>"The generated key can be revealed later from this settings page."</BodyText>
                     <ActionForm action=create_action>
                         <Stack top=Space::Md gap=Space::Md>
                             <FormField label="Key name">

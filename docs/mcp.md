@@ -109,6 +109,99 @@ export FINELOR_MCP_KEY="finelor_mcp_..."
 
 Some MCP clients require an explicit transport field, while others infer Streamable HTTP from the `url`. If your client requires one, use that client's expected spelling, for example `type: streamable-http`, `type: streamable_http`, or `transport: streamable-http`.
 
+## Using Finelor MCP from OpenClaw and Hermes
+
+Finelor's MCP endpoint can be consumed directly by remote MCP clients such as OpenClaw and Hermes.
+
+Prerequisites:
+
+- Finelor must be running at a reachable URL, for example `https://finelor.example.com/mcp`
+- You need an MCP key created in Finelor Settings
+- The MCP client must be able to reach the Finelor host
+
+### OpenClaw
+
+OpenClaw can connect to Finelor as a remote MCP server over Streamable HTTP.
+
+Add Finelor with:
+
+```bash
+openclaw mcp set finelor '{
+  "url": "https://finelor.example.com/mcp",
+  "transport": "streamable-http",
+  "headers": {
+    "Authorization": "Bearer <YOUR_FINELOR_MCP_KEY>"
+  }
+}'
+```
+
+Check the saved config:
+
+```bash
+openclaw mcp show finelor
+```
+
+Notes:
+
+- Use the public Finelor `/mcp` endpoint.
+- Replace `<YOUR_FINELOR_MCP_KEY>` with a real MCP key from Finelor.
+- OpenClaw-managed MCP definitions are saved in OpenClaw config and used by OpenClaw tool-enabled runtimes.
+
+### Hermes
+
+Hermes can connect to Finelor as a remote HTTP MCP server.
+
+Add Finelor to `~/.hermes/config.yaml`:
+
+```yaml
+mcp_servers:
+  finelor:
+    url: "https://finelor.example.com/mcp"
+    headers:
+      Authorization: "Bearer <YOUR_FINELOR_MCP_KEY>"
+    tools:
+      include:
+        - document_status_summary
+        - list_documents
+        - get_document
+        - explain_document
+```
+
+Then reload MCP servers in Hermes:
+
+```text
+/reload-mcp
+```
+
+Notes:
+
+- Hermes usually selects MCP tools automatically during normal reasoning.
+- If you restrict tools with `include`, keep the list aligned with the tools Finelor currently exposes.
+
+### Example chats
+
+Once Finelor MCP is configured, you can ask things like:
+
+- “Show me the current Finelor document status summary.”
+- “List the 10 most recent Finelor documents.”
+- “Explain why document D000123 is blocked.”
+- “Get the details for document D000123 and summarize the accounting status.”
+- “Which Finelor documents are still processing, and which are ready for export?”
+
+Example follow-up prompts:
+
+- “List recent Finelor documents and point out any that need human review.”
+- “Explain the current status of D000123 in plain language.”
+- “Compare the last five Finelor documents and tell me which ones are blocked or failed.”
+- “Summarize what is waiting in Finelor right now so I know what to review first.”
+
+### Troubleshooting
+
+- If the client cannot connect, verify that the Finelor `/mcp` endpoint is reachable from that machine.
+- If authentication fails, generate a new MCP key in Finelor and update the bearer token in the client config.
+- If no tools appear, reload MCP configuration in the client and confirm that Finelor is exposing `/mcp`.
+- If Finelor is behind host or origin restrictions, make sure the deployment is configured to allow the hostname you are using.
+
 Do not use public API keys here. Public API keys authenticate `/api/v1/*`; MCP keys authenticate `/mcp`.
 
 ## Tools

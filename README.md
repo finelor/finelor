@@ -17,7 +17,8 @@ We are building and sharing openly the foundational infrastructure for autonomou
 - approval workflows
 - export to accounting systems
 - human-in-the-loop clarifications
-- intelligent conversational support
+- intelligent conversational support through Telegram and Slack
+- Web control panel app
 - And many more coming soon
 
 ## Install & Run
@@ -133,7 +134,30 @@ Project documentation lives in [`docs/`](docs/).
 Finelor also exposes integration interfaces:
 
 - Public API endpoints are available for API-key authenticated document ingestion and document queries. See [`docs/api.md`](docs/api.md).
-- MCP server support is available for AI agents to query Finelor document information with MCP-key authentication. See [`docs/mcp.md`](docs/mcp.md).
+- MCP server support is available for AI agents to query Finelor document information with MCP-key authentication. For setup details, examples, and troubleshooting, see [`docs/mcp.md`](docs/mcp.md).
+
+## MCP integrations
+
+Finelor exposes a read-only MCP server for external AI clients and agent runtimes.
+
+Endpoint:
+
+```text
+/mcp
+```
+
+Typical use cases:
+- ask an AI agent for the current Finelor document status
+- list recent documents and identify items that need review
+- explain why one document is blocked, pending, failed, or ready
+- retrieve document details by document reference and summarize accounting status
+
+Examples:
+
+- OpenClaw can be configured with a named remote MCP server using `transport: "streamable-http"` and an `Authorization: Bearer ...` header.
+- Hermes can be configured under `mcp_servers` in `~/.hermes/config.yaml` with the same endpoint and bearer token.
+
+See [`docs/mcp.md`](docs/mcp.md) for full setup instructions, working OpenClaw and Hermes examples, and example chats.
 
 ## Contribution
 

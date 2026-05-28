@@ -62,7 +62,7 @@ Multipart fields:
 | `file` | Yes | Source document bytes. Can be an image, PDF, Word file, or other supported document artifact. |
 | `filename` | No | Overrides the uploaded file name used for provenance/display. |
 | `mime_type` | No | Overrides the uploaded part content type. Defaults to `application/octet-stream` when unavailable. |
-| `source_id` | No | Caller-provided idempotency/provenance identifier for the source system. |
+| `source_id` | No | Caller-provided provenance identifier for the source system. |
 
 Optional headers:
 
