@@ -127,7 +127,10 @@ pub async fn resolve_channel_by_name(
     bot_token: &str,
     channel_name: &str,
 ) -> Result<Option<SlackChannelResolution>, ServerFnError> {
-    let normalized_name = channel_name.trim().trim_start_matches('#').to_ascii_lowercase();
+    let normalized_name = channel_name
+        .trim()
+        .trim_start_matches('#')
+        .to_ascii_lowercase();
     if normalized_name.is_empty() {
         return Ok(None);
     }

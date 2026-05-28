@@ -29,6 +29,8 @@ pub mod queue;
 pub mod web;
 #[cfg(feature = "ssr")]
 pub mod workspace;
+#[cfg(feature = "ssr")]
+pub use integrations::telegram;
 
 #[cfg(feature = "hydrate")]
 #[leptos::wasm_bindgen::prelude::wasm_bindgen]

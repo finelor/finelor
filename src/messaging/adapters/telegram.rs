@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use crate::db;
 use crate::ingestion::{self, SavedDocumentRef};
+use crate::integrations::telegram::{TelegramNotifier, escape_markdown};
 use crate::messaging::contracts::{
     ActionButton, AgentInboundMessage, GatewayAttachment, GatewayMessageFormat, MessageSource,
 };
@@ -19,7 +20,6 @@ use crate::messaging::dispatch::OutboundChannelAdapter;
 use crate::messaging::gateway::{AgentGatewayState, encode_document_action, parse_document_action};
 use crate::messaging::intents::slash_command_menu;
 use crate::messaging::interventions::InterventionTarget;
-use crate::integrations::telegram::{TelegramNotifier, escape_markdown};
 use crate::web::events::{
     AppEvent, TelegramConnectStatusKind, get_telegram_connect_session,
     update_telegram_connect_session_status,

@@ -198,10 +198,16 @@ pub async fn list_company_channels() -> Result<Vec<CompanyChannel>, ServerFnErro
     let slack_bot_token = config.messaging.slack.bot_token.trim().to_string();
     if !slack_bot_token.is_empty() {
         for channel in &mut channels {
-            if channel.channel_type != "SLACK" || !channel.active || channel.channel_identifier.starts_with('D') {
+            if channel.channel_type != "SLACK"
+                || !channel.active
+                || channel.channel_identifier.starts_with('D')
+            {
                 continue;
             }
-            let metadata = channel.metadata.clone().unwrap_or_else(|| serde_json::json!({}));
+            let metadata = channel
+                .metadata
+                .clone()
+                .unwrap_or_else(|| serde_json::json!({}));
             let existing_name = metadata
                 .get("channel_name")
                 .and_then(serde_json::Value::as_str)
@@ -220,7 +226,10 @@ pub async fn list_company_channels() -> Result<Vec<CompanyChannel>, ServerFnErro
             };
             let mut merged = metadata;
             if let Some(map) = merged.as_object_mut() {
-                map.insert("channel_name".to_string(), serde_json::Value::String(channel_name));
+                map.insert(
+                    "channel_name".to_string(),
+                    serde_json::Value::String(channel_name),
+                );
             }
             sqlx::query("UPDATE channel_identities SET metadata = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1")
                 .bind(channel.id)
@@ -313,18 +322,22 @@ pub async fn list_slack_allowed_channels() -> Result<Vec<SlackAllowedChannel>, S
 
     Ok(rows
         .into_iter()
-        .map(|(id, channel_id, channel_name, channel_type, active)| SlackAllowedChannel {
-            id,
-            channel_id,
-            channel_name,
-            channel_type,
-            active,
-        })
+        .map(
+            |(id, channel_id, channel_name, channel_type, active)| SlackAllowedChannel {
+                id,
+                channel_id,
+                channel_name,
+                channel_type,
+                active,
+            },
+        )
         .collect())
 }
 
 #[server(AddSlackAllowedChannel, "/api")]
-pub async fn add_slack_allowed_channel(channel_name: String) -> Result<SlackAllowedChannel, ServerFnError> {
+pub async fn add_slack_allowed_channel(
+    channel_name: String,
+) -> Result<SlackAllowedChannel, ServerFnError> {
     let pool = pool();
     let session: Session = leptos_axum::extract()
         .await
@@ -343,7 +356,8 @@ pub async fn add_slack_allowed_channel(channel_name: String) -> Result<SlackAllo
         return Err(ServerFnError::new("Slack bot token is not configured."));
     }
 
-    let Some(resolved) = crate::integrations::slack::resolve_channel_by_name(&bot_token, &normalized_name).await?
+    let Some(resolved) =
+        crate::integrations::slack::resolve_channel_by_name(&bot_token, &normalized_name).await?
     else {
         return Err(ServerFnError::new(
             "Could not find that Slack channel, or the app does not have access to it.",
@@ -381,7 +395,9 @@ pub async fn add_slack_allowed_channel(channel_name: String) -> Result<SlackAllo
 }
 
 #[server(VerifySlackAllowedChannel, "/api")]
-pub async fn verify_slack_allowed_channel(channel_name: String) -> Result<SlackChannelVerification, ServerFnError> {
+pub async fn verify_slack_allowed_channel(
+    channel_name: String,
+) -> Result<SlackChannelVerification, ServerFnError> {
     let pool = pool();
     let session: Session = leptos_axum::extract()
         .await

@@ -448,63 +448,175 @@ macro_rules! markdown_msg {
     };
     // Single argument
     ($template:expr, $arg1:expr) => {
-        $template.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg1), 1)
+        $template.replacen(
+            "{}",
+            &$crate::integrations::telegram::escape_markdown($arg1),
+            1,
+        )
     };
     // Two arguments
     ($template:expr, $arg1:expr, $arg2:expr) => {{
         let mut result = $template.to_string();
-        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg1), 1);
-        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg2), 1);
+        result = result.replacen(
+            "{}",
+            &$crate::integrations::telegram::escape_markdown($arg1),
+            1,
+        );
+        result = result.replacen(
+            "{}",
+            &$crate::integrations::telegram::escape_markdown($arg2),
+            1,
+        );
         result
     }};
     // Three arguments
     ($template:expr, $arg1:expr, $arg2:expr, $arg3:expr) => {{
         let mut result = $template.to_string();
-        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg1), 1);
-        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg2), 1);
-        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg3), 1);
+        result = result.replacen(
+            "{}",
+            &$crate::integrations::telegram::escape_markdown($arg1),
+            1,
+        );
+        result = result.replacen(
+            "{}",
+            &$crate::integrations::telegram::escape_markdown($arg2),
+            1,
+        );
+        result = result.replacen(
+            "{}",
+            &$crate::integrations::telegram::escape_markdown($arg3),
+            1,
+        );
         result
     }};
     // Four arguments
     ($template:expr, $arg1:expr, $arg2:expr, $arg3:expr, $arg4:expr) => {{
         let mut result = $template.to_string();
-        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg1), 1);
-        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg2), 1);
-        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg3), 1);
-        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg4), 1);
+        result = result.replacen(
+            "{}",
+            &$crate::integrations::telegram::escape_markdown($arg1),
+            1,
+        );
+        result = result.replacen(
+            "{}",
+            &$crate::integrations::telegram::escape_markdown($arg2),
+            1,
+        );
+        result = result.replacen(
+            "{}",
+            &$crate::integrations::telegram::escape_markdown($arg3),
+            1,
+        );
+        result = result.replacen(
+            "{}",
+            &$crate::integrations::telegram::escape_markdown($arg4),
+            1,
+        );
         result
     }};
     // Five arguments
     ($template:expr, $arg1:expr, $arg2:expr, $arg3:expr, $arg4:expr, $arg5:expr) => {{
         let mut result = $template.to_string();
-        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg1), 1);
-        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg2), 1);
-        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg3), 1);
-        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg4), 1);
-        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg5), 1);
+        result = result.replacen(
+            "{}",
+            &$crate::integrations::telegram::escape_markdown($arg1),
+            1,
+        );
+        result = result.replacen(
+            "{}",
+            &$crate::integrations::telegram::escape_markdown($arg2),
+            1,
+        );
+        result = result.replacen(
+            "{}",
+            &$crate::integrations::telegram::escape_markdown($arg3),
+            1,
+        );
+        result = result.replacen(
+            "{}",
+            &$crate::integrations::telegram::escape_markdown($arg4),
+            1,
+        );
+        result = result.replacen(
+            "{}",
+            &$crate::integrations::telegram::escape_markdown($arg5),
+            1,
+        );
         result
     }};
     // Six arguments
     ($template:expr, $arg1:expr, $arg2:expr, $arg3:expr, $arg4:expr, $arg5:expr, $arg6:expr) => {{
         let mut result = $template.to_string();
-        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg1), 1);
-        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg2), 1);
-        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg3), 1);
-        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg4), 1);
-        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg5), 1);
-        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg6), 1);
+        result = result.replacen(
+            "{}",
+            &$crate::integrations::telegram::escape_markdown($arg1),
+            1,
+        );
+        result = result.replacen(
+            "{}",
+            &$crate::integrations::telegram::escape_markdown($arg2),
+            1,
+        );
+        result = result.replacen(
+            "{}",
+            &$crate::integrations::telegram::escape_markdown($arg3),
+            1,
+        );
+        result = result.replacen(
+            "{}",
+            &$crate::integrations::telegram::escape_markdown($arg4),
+            1,
+        );
+        result = result.replacen(
+            "{}",
+            &$crate::integrations::telegram::escape_markdown($arg5),
+            1,
+        );
+        result = result.replacen(
+            "{}",
+            &$crate::integrations::telegram::escape_markdown($arg6),
+            1,
+        );
         result
     }};
     // Seven arguments
     ($template:expr, $arg1:expr, $arg2:expr, $arg3:expr, $arg4:expr, $arg5:expr, $arg6:expr, $arg7:expr) => {{
         let mut result = $template.to_string();
-        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg1), 1);
-        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg2), 1);
-        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg3), 1);
-        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg4), 1);
-        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg5), 1);
-        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg6), 1);
-        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg7), 1);
+        result = result.replacen(
+            "{}",
+            &$crate::integrations::telegram::escape_markdown($arg1),
+            1,
+        );
+        result = result.replacen(
+            "{}",
+            &$crate::integrations::telegram::escape_markdown($arg2),
+            1,
+        );
+        result = result.replacen(
+            "{}",
+            &$crate::integrations::telegram::escape_markdown($arg3),
+            1,
+        );
+        result = result.replacen(
+            "{}",
+            &$crate::integrations::telegram::escape_markdown($arg4),
+            1,
+        );
+        result = result.replacen(
+            "{}",
+            &$crate::integrations::telegram::escape_markdown($arg5),
+            1,
+        );
+        result = result.replacen(
+            "{}",
+            &$crate::integrations::telegram::escape_markdown($arg6),
+            1,
+        );
+        result = result.replacen(
+            "{}",
+            &$crate::integrations::telegram::escape_markdown($arg7),
+            1,
+        );
         result
     }};
 }
@@ -640,20 +752,26 @@ pub async fn fetch_channel_avatar_data_url(
     metadata: Option<&serde_json::Value>,
 ) -> Result<Option<String>, ServerFnError> {
     let client = reqwest::Client::new();
-    let file_id =
-        match fetch_chat_photo_file_id(&client, bot_token, channel_identifier).await? {
-            Some(file_id) => Some(file_id),
-            None => {
-                let user_id = metadata_string(metadata, &["user", "id"]);
-                match user_id {
-                    Some(user_id) => fetch_user_photo_file_id(&client, bot_token, &user_id).await?,
-                    None => None,
-                }
+    let file_id = match fetch_chat_photo_file_id(&client, bot_token, channel_identifier).await? {
+        Some(file_id) => Some(file_id),
+        None => {
+            let user_id = metadata_string(metadata, &["user", "id"]);
+            match user_id {
+                Some(user_id) => fetch_user_photo_file_id(&client, bot_token, &user_id).await?,
+                None => None,
             }
-        };
-    let Some(file_id) = file_id else { return Ok(None); };
-    let Some(file_path) = fetch_file_path(&client, bot_token, &file_id).await? else { return Ok(None); };
-    let url = format!("https://api.telegram.org/file/bot{}/{}", bot_token, file_path);
+        }
+    };
+    let Some(file_id) = file_id else {
+        return Ok(None);
+    };
+    let Some(file_path) = fetch_file_path(&client, bot_token, &file_id).await? else {
+        return Ok(None);
+    };
+    let url = format!(
+        "https://api.telegram.org/file/bot{}/{}",
+        bot_token, file_path
+    );
     let response = client
         .get(url)
         .send()
@@ -680,7 +798,11 @@ fn metadata_string(metadata: Option<&serde_json::Value>, path: &[&str]) -> Optio
     for key in path {
         value = value.get(*key)?;
     }
-    value.as_str().map(str::trim).filter(|v| !v.is_empty()).map(ToOwned::to_owned)
+    value
+        .as_str()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 #[cfg(feature = "ssr")]
@@ -705,7 +827,10 @@ async fn fetch_chat_photo_file_id(
     if !body.ok {
         return Ok(None);
     }
-    Ok(body.result.and_then(|chat| chat.photo).map(|photo| photo.small_file_id))
+    Ok(body
+        .result
+        .and_then(|chat| chat.photo)
+        .map(|photo| photo.small_file_id))
 }
 
 #[cfg(feature = "ssr")]
@@ -715,7 +840,10 @@ async fn fetch_user_photo_file_id(
     user_id: &str,
 ) -> Result<Option<String>, ServerFnError> {
     let response = client
-        .get(format!("https://api.telegram.org/bot{}/getUserProfilePhotos", bot_token))
+        .get(format!(
+            "https://api.telegram.org/bot{}/getUserProfilePhotos",
+            bot_token
+        ))
         .query(&[("user_id", user_id), ("limit", "1")])
         .send()
         .await
@@ -726,7 +854,9 @@ async fn fetch_user_photo_file_id(
     let body = response
         .json::<TelegramApiResponse<TelegramUserProfilePhotos>>()
         .await
-        .map_err(|e| ServerFnError::new(format!("Telegram getUserProfilePhotos parse failed: {}", e)))?;
+        .map_err(|e| {
+            ServerFnError::new(format!("Telegram getUserProfilePhotos parse failed: {}", e))
+        })?;
     if !body.ok {
         return Ok(None);
     }

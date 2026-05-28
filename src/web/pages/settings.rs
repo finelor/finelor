@@ -15,9 +15,9 @@ use crate::web::components::ui::{
 use crate::web::server::auth::{AuthUser, Logout, get_session_user};
 use crate::web::server::channels::{
     AddSlackAllowedChannel, CompanyChannel, CreateTelegramConnectLink, DeleteCompanyChannel,
-    MessagingProviderStatus, RemoveSlackAllowedChannel, SlackAllowedChannel, SlackChannelVerification,
-    VerifySlackAllowedChannel, get_messaging_provider_status, get_telegram_channel_avatar,
-    list_company_channels, list_slack_allowed_channels,
+    MessagingProviderStatus, RemoveSlackAllowedChannel, SlackAllowedChannel,
+    SlackChannelVerification, VerifySlackAllowedChannel, get_messaging_provider_status,
+    get_telegram_channel_avatar, list_company_channels, list_slack_allowed_channels,
 };
 use crate::web::server::settings::{CompanySettings, UpdateCompanySettings, get_company_settings};
 use icondata::{

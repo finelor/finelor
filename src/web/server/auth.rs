@@ -15,6 +15,9 @@ use sqlx::Row;
 use tower_sessions::Session;
 use uuid::Uuid;
 
+#[cfg(feature = "ssr")]
+pub use crate::web::server::channels::connect_telegram_for_workspace;
+
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct AuthUser {
     pub id: i64,
@@ -23,7 +26,6 @@ pub struct AuthUser {
     pub workspace_id: Uuid,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
-
 
 #[cfg(feature = "ssr")]
 pub fn pool() -> DbPool {
@@ -41,7 +43,6 @@ pub async fn require_session_workspace_id(session: &Session) -> Result<Uuid, Ser
     }
     Ok(crate::workspace::active_workspace_id())
 }
-
 
 #[server(Signup, "/api")]
 pub async fn signup(
@@ -530,7 +531,6 @@ pub async fn get_session_user() -> Result<Option<AuthUser>, ServerFnError> {
         created_at: r.created_at,
     }))
 }
-
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct WebDocumentItem {

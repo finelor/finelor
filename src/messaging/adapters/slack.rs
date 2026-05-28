@@ -634,10 +634,7 @@ async fn resolve_slack_channel_name(
         return None;
     }
 
-    let payload = response
-        .json::<serde_json::Value>()
-        .await
-        .ok()?;
+    let payload = response.json::<serde_json::Value>().await.ok()?;
     if payload.get("ok").and_then(Value::as_bool) != Some(true) {
         return None;
     }
