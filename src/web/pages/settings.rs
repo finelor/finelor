@@ -1,24 +1,27 @@
 use crate::web::client::{copy_to_clipboard, redirect, run_after_ms, subscribe_app_events};
 use crate::web::components::ui::{
-    ActionButton, Alert, AlertKind, Align, Avatar, Badge, BadgeStyle, BodyText, Button, ButtonKind,
-    ButtonSize, ButtonType, Card, CenterFineText, Cluster, DesktopSidebar, Drawer, DrawerContent,
-    DrawerSide, Eyebrow, FineText, FormField, FormHelp, Grid, GridCols, HiddenPlaceholder,
-    IconButton, IconText, InfoItem, Inline, InlineSurface, InlineText, Justify, LinkButton,
-    LoadingCard, Modal, ModalActionGap, ModalActions, ModalCloseButton, ModalHeader,
-    ModalInstruction, ModalTitle, NestedCard, PanelTitle, QrCodeBox, SETTINGS_DRAWER_ID,
-    SavedBadge, ScrollContent, SettingsDrawerBrand, SettingsDrawerNav, SettingsDrawerNavBottom,
-    SettingsDrawerNavTop, SettingsNav, SettingsNavButton, SettingsNavDivider, SettingsNavLink,
-    SettingsNavSection, SettingsSubTabButton, SettingsSubTabList, SettingsSubTabPanel,
-    SettingsSubTabs, SidebarLayout, Space, Stack, TextInput, ToastAlert, ToastViewport, Tone,
+    ActionButton, Alert, AlertKind, Align, Avatar, Badge, BadgeStyle, Banner, BannerProminence,
+    BodyText, Button, ButtonKind, ButtonSize, ButtonType, Card, CenterFineText, Cluster,
+    DesktopSidebar, Drawer, DrawerContent, DrawerSide, Eyebrow, FineText, FormField, FormHelp,
+    Grid, GridCols, HiddenPlaceholder, IconButton, IconText, InfoItem, Inline, InlineSurface,
+    InlineText, Justify, LinkButton, LoadingCard, Modal, ModalActionGap, ModalActions,
+    ModalCloseButton, ModalHeader, ModalInstruction, ModalTitle, NestedCard, PanelTitle, QrCodeBox,
+    SETTINGS_DRAWER_ID, SavedBadge, ScrollContent, SettingsDrawerBrand, SettingsDrawerNav,
+    SettingsDrawerNavBottom, SettingsDrawerNavTop, SettingsNav, SettingsNavButton,
+    SettingsNavDivider, SettingsNavLink, SettingsNavSection, SettingsSubTabButton,
+    SettingsSubTabList, SettingsSubTabPanel, SettingsSubTabs, SidebarLayout, Space, Stack,
+    TextInput, ToastAlert, ToastViewport, Tone,
 };
-use crate::web::server::auth::{
-    AuthUser, CompanyChannel, CreateTelegramConnectLink, DeleteCompanyChannel, Logout,
-    get_session_user, get_telegram_channel_avatar, list_company_channels,
+use crate::web::server::auth::{AuthUser, Logout, get_session_user};
+use crate::web::server::channels::{
+    CompanyChannel, CreateTelegramConnectLink, DeleteCompanyChannel, MessagingProviderStatus,
+    get_messaging_provider_status, get_telegram_channel_avatar, list_company_channels,
 };
 use crate::web::server::settings::{CompanySettings, UpdateCompanySettings, get_company_settings};
 use icondata::{
-    LuArrowUpRight, LuBot, LuBuilding2, LuCalendar, LuCheck, LuCopy, LuFileText, LuLogOut, LuMail,
-    LuMessageCircle, LuPlus, LuQrCode, LuScanQrCode, LuSend, LuSettings, LuTrash2, LuUser, LuX,
+    LuArrowUpRight, LuBot, LuBuilding2, LuCalendar, LuCheck, LuCircleAlert, LuCopy, LuFileText,
+    LuLogOut, LuMail, LuMessageCircle, LuPlus, LuQrCode, LuScanQrCode, LuSend, LuSettings, LuSlack,
+    LuTrash2, LuUser, LuX,
 };
 use leptos::form::ActionForm;
 use leptos::prelude::*;
@@ -39,6 +42,7 @@ struct SettingsPageData {
     user: AuthUser,
     company: CompanySettings,
     channels: Vec<CompanyChannel>,
+    messaging_status: MessagingProviderStatus,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -50,6 +54,7 @@ enum SettingsTab {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ChannelSettingsTab {
     Telegram,
+    Slack,
     Api,
 }
 
@@ -94,6 +99,36 @@ fn telegram_channel_identity_label(channel: &CompanyChannel) -> String {
 
 fn format_member_since(created_at: chrono::DateTime<chrono::Utc>) -> String {
     created_at.format("%b %Y").to_string()
+}
+
+fn slack_channel_display_name(channel: &CompanyChannel) -> String {
+    channel
+        .slack_channel_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            if value.starts_with('#') {
+                value.to_string()
+            } else {
+                format!("#{value}")
+            }
+        })
+        .unwrap_or_else(|| "Slack channel".to_string())
+}
+
+fn slack_channel_is_listable(channel: &CompanyChannel) -> bool {
+    if channel.channel_type != "SLACK" || !channel.active {
+        return false;
+    }
+    let channel_kind = channel
+        .slack_channel_type
+        .as_deref()
+        .map(|value| value.to_ascii_lowercase());
+    if matches!(channel_kind.as_deref(), Some("im") | Some("mpim")) {
+        return false;
+    }
+    !channel.channel_identifier.starts_with('D')
 }
 
 #[component]
@@ -153,6 +188,7 @@ pub fn Settings() -> impl IntoView {
                 user,
                 company: get_company_settings().await?,
                 channels: list_company_channels().await?,
+                messaging_status: get_messaging_provider_status().await?,
             }))
         },
     );
@@ -279,9 +315,39 @@ pub fn Settings() -> impl IntoView {
                             .filter(|channel| channel.active && channel.channel_type == "TELEGRAM")
                             .cloned()
                             .collect::<Vec<_>>();
+                        let active_slack_channels = settings
+                            .channels
+                            .iter()
+                            .filter(|channel| slack_channel_is_listable(channel))
+                            .cloned()
+                            .collect::<Vec<_>>();
                         let has_active_telegram_channels = !active_telegram_channels.is_empty();
                         let telegram_channel_count = active_telegram_channels.len();
+                        let has_active_slack_channels = !active_slack_channels.is_empty();
+                        let telegram_is_active_provider =
+                            settings.messaging_status.active_provider == "telegram";
+                        let slack_is_active_provider =
+                            settings.messaging_status.active_provider == "slack";
+                        let slack_workspace_title = StoredValue::new(
+                            if has_active_slack_channels {
+                                settings
+                                    .messaging_status
+                                    .slack_workspace_name
+                                    .clone()
+                                    .unwrap_or_else(|| "Slack workspace".to_string())
+                            } else {
+                                "Slack workspace".to_string()
+                            },
+                        );
+                        let slack_workspace_url = StoredValue::new(
+                            settings
+                                .messaging_status
+                                .slack_workspace_url
+                                .clone()
+                                .unwrap_or_else(|| "Unavailable".to_string()),
+                        );
                         let active_telegram_channels = RwSignal::new(active_telegram_channels);
+                        let active_slack_channels = RwSignal::new(active_slack_channels);
                         view! {
                             <>
                                 <Drawer drawer_id=SETTINGS_DRAWER_ID>
@@ -340,6 +406,13 @@ pub fn Settings() -> impl IntoView {
                                                                         "Telegram"
                                                                     </SettingsSubTabButton>
                                                                     <SettingsSubTabButton
+                                                                        active=move || active_channel_tab.get() == ChannelSettingsTab::Slack
+                                                                        on_click=move |_| active_channel_tab.set(ChannelSettingsTab::Slack)
+                                                                    >
+                                                                        <Icon icon=LuSlack width="1rem" height="1rem" />
+                                                                        "Slack"
+                                                                    </SettingsSubTabButton>
+                                                                    <SettingsSubTabButton
                                                                         active=move || active_channel_tab.get() == ChannelSettingsTab::Api
                                                                         on_click=move |_| active_channel_tab.set(ChannelSettingsTab::Api)
                                                                     >
@@ -352,13 +425,111 @@ pub fn Settings() -> impl IntoView {
                                                                     <Show
                                                                         when=move || active_channel_tab.get() == ChannelSettingsTab::Telegram
                                                                         fallback=move || view! {
-                                                                            <BodyText>"API/Webhoook Settings - Coming Soon"</BodyText>
+                                                                            <Show
+                                                                                when=move || active_channel_tab.get() == ChannelSettingsTab::Slack
+                                                                                fallback=move || view! {
+                                                                                    <BodyText>"API/Webhook Settings - Coming Soon"</BodyText>
+                                                                                }
+                                                                            >
+                                                                                <Stack top=Space::Md gap=Space::Md>
+                                                                                    <Inline justify=Justify::Between stack_mobile=true>
+                                                                                        <Stack gap=Space::None>
+                                                                                            <Cluster gap=Space::Sm>
+                                                                                                <PanelTitle>{slack_workspace_title.get_value()}</PanelTitle>
+                                                                                                <Badge
+                                                                                                    tone=if slack_is_active_provider { Tone::Success } else { Tone::Neutral }
+                                                                                                    style=BadgeStyle::Soft
+                                                                                                >
+                                                                                                    {if slack_is_active_provider { "Active" } else { "Inactive" }}
+                                                                                                </Badge>
+                                                                                            </Cluster>
+                                                                                            <FineText>
+                                                                                                {format!("Workspace URL: {}", slack_workspace_url.get_value())}
+                                                                                            </FineText>
+                                                                                        </Stack>
+                                                                                    </Inline>
+
+                                                                                    <Show
+                                                                                        when=move || has_active_slack_channels
+                                                                                        fallback=move || view! {
+                                                                                            <Inline surface=InlineSurface::Panel>
+                                                                                                <Stack gap=Space::None shrink=true>
+                                                                                                    <PanelTitle>"No Slack channels yet"</PanelTitle>
+                                                                                                    <FineText>"Slack channels appear here after messages are received from known connected channels."</FineText>
+                                                                                                </Stack>
+                                                                                            </Inline>
+                                                                                        }
+                                                                                    >
+                                                                                        <Stack gap=Space::Sm>
+                                                                                            {move || active_slack_channels
+                                                                                                .get()
+                                                                                                .into_iter()
+                                                                                                .map(|channel| {
+                                                                                                    let channel_for_remove = channel.clone();
+                                                                                                    let display_name = slack_channel_display_name(&channel);
+                                                                                                    let subtitle = "Slack channel".to_string();
+                                                                                                    view! {
+                                                                                                        <Inline align=Align::Start justify=Justify::Between gap=Space::Md surface=InlineSurface::Panel>
+                                                                                                            <Inline gap=Space::Md shrink=true>
+                                                                                                                <Avatar>
+                                                                                                                    <Icon icon=LuMessageCircle width="1.1rem" height="1.1rem" />
+                                                                                                                </Avatar>
+                                                                                                                <Stack gap=Space::None shrink=true>
+                                                                                                                    <Cluster gap=Space::Sm>
+                                                                                                                        <PanelTitle>{display_name}</PanelTitle>
+                                                                                                                        <Badge tone=Tone::Success style=BadgeStyle::Soft>"Active"</Badge>
+                                                                                                                    </Cluster>
+                                                                                                                    <FineText>{subtitle}</FineText>
+                                                                                                                </Stack>
+                                                                                                            </Inline>
+                                                                                                            <Inline gap=Space::Sm>
+                                                                                                                <IconButton
+                                                                                                                    label="Remove"
+                                                                                                                    kind=ButtonKind::SoftDanger
+                                                                                                                    size=ButtonSize::Sm
+                                                                                                                    disabled=!slack_is_active_provider
+                                                                                                                    on_click=move |_| {
+                                                                                                                        if slack_is_active_provider {
+                                                                                                                            channel_pending_delete.set(Some(channel_for_remove.clone()))
+                                                                                                                        }
+                                                                                                                    }
+                                                                                                                >
+                                                                                                                    <Icon icon=LuTrash2 width="1rem" height="1rem" />
+                                                                                                                </IconButton>
+                                                                                                            </Inline>
+                                                                                                        </Inline>
+                                                                                                    }
+                                                                                                })
+                                                                                                .collect_view()
+                                                                                            }
+                                                                                        </Stack>
+                                                                                    </Show>
+
+                                                                                    <Show when=move || !slack_is_active_provider>
+                                                                                        <Banner
+                                                                                            title="Slack provider is inactive in server config".to_string()
+                                                                                            subtitle="Controls are disabled until Slack is set as the active messaging provider.".to_string()
+                                                                                            icon=LuCircleAlert
+                                                                                            tone=Tone::Warning
+                                                                                            prominence=BannerProminence::Spacious
+                                                                                        />
+                                                                                    </Show>
+                                                                                </Stack>
+                                                                            </Show>
                                                                         }
                                                                     >
                                                                         <Stack top=Space::Md gap=Space::Md>
                                                                             <Inline justify=Justify::Between stack_mobile=true>
                                                                                 <Stack gap=Space::None>
-                                                                                    <PanelTitle>"Telegram connections"</PanelTitle>
+                                                                                    <Cluster gap=Space::Sm>
+                                                                                        <PanelTitle>"Telegram connections"</PanelTitle>
+                                                                                        <Badge
+                                                                                            tone=if telegram_is_active_provider { Tone::Success } else { Tone::Neutral }
+                                                                                            style=BadgeStyle::Soft
+                                                                                        >
+                                                                                            {if telegram_is_active_provider { "Active" } else { "Inactive" }}
+                                                                                        </Badge>
+                                                                                    </Cluster>
                                                                                     <FineText>
                                                                                         {if has_active_telegram_channels {
                                                                                             format!("{} active connection{}", telegram_channel_count, if telegram_channel_count == 1 { "" } else { "s" })
@@ -369,8 +540,11 @@ pub fn Settings() -> impl IntoView {
                                                                                 </Stack>
                                                                                 <ActionButton
                                                                                     kind=ButtonKind::Primary
+                                                                                    disabled=!telegram_is_active_provider
                                                                                     on_click=move |_| {
-                                                                                        telegram_link_action.dispatch(CreateTelegramConnectLink {});
+                                                                                        if telegram_is_active_provider {
+                                                                                            telegram_link_action.dispatch(CreateTelegramConnectLink {});
+                                                                                        }
                                                                                     }
                                                                                 >
                                                                                         <Icon icon=LuPlus width="1rem" height="1rem" />
@@ -435,10 +609,15 @@ pub fn Settings() -> impl IntoView {
                                                                                                     </Inline>
                                                                                                     <Inline gap=Space::Sm>
                                                                                                         <IconButton
-                                                                                                            label="Remove Telegram connection"
+                                                                                                            label="Remove"
                                                                                                             kind=ButtonKind::SoftDanger
                                                                                                             size=ButtonSize::Sm
-                                                                                                            on_click=move |_| channel_pending_delete.set(Some(channel_for_remove.clone()))
+                                                                                                            disabled=!telegram_is_active_provider
+                                                                                                            on_click=move |_| {
+                                                                                                                if telegram_is_active_provider {
+                                                                                                                    channel_pending_delete.set(Some(channel_for_remove.clone()))
+                                                                                                                }
+                                                                                                            }
                                                                                                         >
                                                                                                             <Icon icon=LuTrash2 width="1rem" height="1rem" />
                                                                                                         </IconButton>
@@ -449,6 +628,15 @@ pub fn Settings() -> impl IntoView {
                                                                                             .collect_view()
                                                                                     }
                                                                                 </Stack>
+                                                                            </Show>
+                                                                            <Show when=move || !telegram_is_active_provider>
+                                                                                <Banner
+                                                                                    title="Telegram provider is inactive in server config".to_string()
+                                                                                    subtitle="Controls are disabled until Telegram is set as the active messaging provider.".to_string()
+                                                                                    icon=LuCircleAlert
+                                                                                    tone=Tone::Warning
+                                                                                    prominence=BannerProminence::Spacious
+                                                                                />
                                                                             </Show>
                                                                         </Stack>
                                                                         <Show when=move || telegram_link_value.get().as_ref().and_then(|result| result.as_ref().err()).is_some()>
@@ -710,14 +898,27 @@ pub fn Settings() -> impl IntoView {
                                         channel_pending_delete
                                             .get()
                                             .map(|channel| {
-                                                let subtitle = telegram_channel_identity_label(&channel);
+                                                let is_telegram = channel.channel_type == "TELEGRAM";
+                                                let subtitle = if is_telegram {
+                                                    telegram_channel_identity_label(&channel)
+                                                } else {
+                                                    channel
+                                                        .display_name
+                                                        .clone()
+                                                        .unwrap_or_else(|| format!("Slack · {}", channel.channel_identifier))
+                                                };
+                                                let remove_title = if is_telegram {
+                                                    "Remove Telegram connection"
+                                                } else {
+                                                    "Remove Slack connection"
+                                                };
                                                 view! {
                                                     <Modal
-                                                        close_label="Cancel removing Telegram connection"
+                                                        close_label="Cancel removing connection"
                                                         on_close=move |_| channel_pending_delete.set(None)
                                                     >
                                                         <ModalCloseButton
-                                                            label="Cancel removing Telegram connection"
+                                                            label="Cancel removing connection"
                                                             on_click=move |_| channel_pending_delete.set(None)
                                                         >
                                                             <Icon icon=LuX width="1.25rem" height="1.25rem" />
@@ -729,7 +930,7 @@ pub fn Settings() -> impl IntoView {
                                                                     <Icon icon=LuTrash2 width="1.1rem" height="1.1rem" />
                                                                 </Avatar>
                                                                 <div>
-                                                                    <PanelTitle>"Remove Telegram connection"</PanelTitle>
+                                                                    <PanelTitle>{remove_title}</PanelTitle>
                                                                     <FineText>{subtitle}</FineText>
                                                                 </div>
                                                             </Inline>

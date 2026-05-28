@@ -15,6 +15,8 @@ pub mod inference;
 #[cfg(feature = "ssr")]
 pub mod ingestion;
 #[cfg(feature = "ssr")]
+pub mod integrations;
+#[cfg(feature = "ssr")]
 pub mod kv;
 #[cfg(feature = "ssr")]
 pub mod messaging;
@@ -24,8 +26,6 @@ pub mod orchestration;
 pub mod query;
 #[cfg(feature = "ssr")]
 pub mod queue;
-#[cfg(feature = "ssr")]
-pub mod telegram;
 pub mod web;
 #[cfg(feature = "ssr")]
 pub mod workspace;

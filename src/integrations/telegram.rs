@@ -1,4 +1,4 @@
-//! Telegram module for notifications and human review UX
+//! Telegram integration module for notifications and provider APIs.
 //!
 //! Handles:
 //! - Document status notifications
@@ -12,6 +12,9 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use base64::Engine;
+#[cfg(feature = "ssr")]
+use leptos::prelude::ServerFnError;
+use serde::Deserialize;
 
 /// Telegram bot notifier
 #[derive(Clone)]
@@ -264,6 +267,69 @@ pub struct TelegramConnectClaims {
     pub exp_ts: i64,
 }
 
+#[cfg(feature = "ssr")]
+#[derive(Deserialize)]
+struct TelegramGetMeResponse {
+    ok: bool,
+    result: Option<TelegramGetMeUser>,
+}
+
+#[cfg(feature = "ssr")]
+#[derive(Deserialize)]
+struct TelegramGetMeUser {
+    username: Option<String>,
+}
+
+#[cfg(feature = "ssr")]
+#[derive(Deserialize)]
+struct TelegramWebhookInfoResponse {
+    ok: bool,
+    result: Option<TelegramWebhookInfo>,
+}
+
+#[cfg(feature = "ssr")]
+#[derive(Deserialize)]
+struct TelegramWebhookInfo {
+    url: String,
+}
+
+#[cfg(feature = "ssr")]
+#[derive(Deserialize)]
+struct TelegramApiResponse<T> {
+    ok: bool,
+    result: Option<T>,
+}
+
+#[cfg(feature = "ssr")]
+#[derive(Deserialize)]
+struct TelegramChatInfo {
+    photo: Option<TelegramChatPhoto>,
+}
+
+#[cfg(feature = "ssr")]
+#[derive(Deserialize)]
+struct TelegramChatPhoto {
+    small_file_id: String,
+}
+
+#[cfg(feature = "ssr")]
+#[derive(Deserialize)]
+struct TelegramUserProfilePhotos {
+    photos: Vec<Vec<TelegramPhotoSize>>,
+}
+
+#[cfg(feature = "ssr")]
+#[derive(Deserialize)]
+struct TelegramPhotoSize {
+    file_id: String,
+}
+
+#[cfg(feature = "ssr")]
+#[derive(Deserialize)]
+struct TelegramFileInfo {
+    file_path: Option<String>,
+}
+
 pub fn create_connect_token(
     secret: &str,
     workspace_id: Uuid,
@@ -382,63 +448,63 @@ macro_rules! markdown_msg {
     };
     // Single argument
     ($template:expr, $arg1:expr) => {
-        $template.replacen("{}", &$crate::telegram::escape_markdown($arg1), 1)
+        $template.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg1), 1)
     };
     // Two arguments
     ($template:expr, $arg1:expr, $arg2:expr) => {{
         let mut result = $template.to_string();
-        result = result.replacen("{}", &$crate::telegram::escape_markdown($arg1), 1);
-        result = result.replacen("{}", &$crate::telegram::escape_markdown($arg2), 1);
+        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg1), 1);
+        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg2), 1);
         result
     }};
     // Three arguments
     ($template:expr, $arg1:expr, $arg2:expr, $arg3:expr) => {{
         let mut result = $template.to_string();
-        result = result.replacen("{}", &$crate::telegram::escape_markdown($arg1), 1);
-        result = result.replacen("{}", &$crate::telegram::escape_markdown($arg2), 1);
-        result = result.replacen("{}", &$crate::telegram::escape_markdown($arg3), 1);
+        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg1), 1);
+        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg2), 1);
+        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg3), 1);
         result
     }};
     // Four arguments
     ($template:expr, $arg1:expr, $arg2:expr, $arg3:expr, $arg4:expr) => {{
         let mut result = $template.to_string();
-        result = result.replacen("{}", &$crate::telegram::escape_markdown($arg1), 1);
-        result = result.replacen("{}", &$crate::telegram::escape_markdown($arg2), 1);
-        result = result.replacen("{}", &$crate::telegram::escape_markdown($arg3), 1);
-        result = result.replacen("{}", &$crate::telegram::escape_markdown($arg4), 1);
+        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg1), 1);
+        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg2), 1);
+        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg3), 1);
+        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg4), 1);
         result
     }};
     // Five arguments
     ($template:expr, $arg1:expr, $arg2:expr, $arg3:expr, $arg4:expr, $arg5:expr) => {{
         let mut result = $template.to_string();
-        result = result.replacen("{}", &$crate::telegram::escape_markdown($arg1), 1);
-        result = result.replacen("{}", &$crate::telegram::escape_markdown($arg2), 1);
-        result = result.replacen("{}", &$crate::telegram::escape_markdown($arg3), 1);
-        result = result.replacen("{}", &$crate::telegram::escape_markdown($arg4), 1);
-        result = result.replacen("{}", &$crate::telegram::escape_markdown($arg5), 1);
+        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg1), 1);
+        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg2), 1);
+        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg3), 1);
+        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg4), 1);
+        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg5), 1);
         result
     }};
     // Six arguments
     ($template:expr, $arg1:expr, $arg2:expr, $arg3:expr, $arg4:expr, $arg5:expr, $arg6:expr) => {{
         let mut result = $template.to_string();
-        result = result.replacen("{}", &$crate::telegram::escape_markdown($arg1), 1);
-        result = result.replacen("{}", &$crate::telegram::escape_markdown($arg2), 1);
-        result = result.replacen("{}", &$crate::telegram::escape_markdown($arg3), 1);
-        result = result.replacen("{}", &$crate::telegram::escape_markdown($arg4), 1);
-        result = result.replacen("{}", &$crate::telegram::escape_markdown($arg5), 1);
-        result = result.replacen("{}", &$crate::telegram::escape_markdown($arg6), 1);
+        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg1), 1);
+        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg2), 1);
+        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg3), 1);
+        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg4), 1);
+        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg5), 1);
+        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg6), 1);
         result
     }};
     // Seven arguments
     ($template:expr, $arg1:expr, $arg2:expr, $arg3:expr, $arg4:expr, $arg5:expr, $arg6:expr, $arg7:expr) => {{
         let mut result = $template.to_string();
-        result = result.replacen("{}", &$crate::telegram::escape_markdown($arg1), 1);
-        result = result.replacen("{}", &$crate::telegram::escape_markdown($arg2), 1);
-        result = result.replacen("{}", &$crate::telegram::escape_markdown($arg3), 1);
-        result = result.replacen("{}", &$crate::telegram::escape_markdown($arg4), 1);
-        result = result.replacen("{}", &$crate::telegram::escape_markdown($arg5), 1);
-        result = result.replacen("{}", &$crate::telegram::escape_markdown($arg6), 1);
-        result = result.replacen("{}", &$crate::telegram::escape_markdown($arg7), 1);
+        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg1), 1);
+        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg2), 1);
+        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg3), 1);
+        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg4), 1);
+        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg5), 1);
+        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg6), 1);
+        result = result.replacen("{}", &$crate::integrations::telegram::escape_markdown($arg7), 1);
         result
     }};
 }
@@ -499,6 +565,213 @@ pub fn build_pipeline_progress_message(
     }
 
     lines.join("\n")
+}
+
+#[cfg(feature = "ssr")]
+pub async fn fetch_bot_username(bot_token: &str) -> Result<String, ServerFnError> {
+    let url = format!("https://api.telegram.org/bot{}/getMe", bot_token);
+    let response = reqwest::Client::new()
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| ServerFnError::new(format!("Telegram getMe failed: {}", e)))?;
+    if !response.status().is_success() {
+        return Err(ServerFnError::new("Telegram getMe returned an error."));
+    }
+    let body = response
+        .json::<TelegramGetMeResponse>()
+        .await
+        .map_err(|e| ServerFnError::new(format!("Telegram getMe parse failed: {}", e)))?;
+    if !body.ok {
+        return Err(ServerFnError::new("Telegram bot token was rejected."));
+    }
+    body.result
+        .and_then(|user| user.username)
+        .filter(|username| !username.trim().is_empty())
+        .ok_or_else(|| ServerFnError::new("Telegram bot username is unavailable."))
+}
+
+#[cfg(feature = "ssr")]
+pub async fn verify_delivery_ready(
+    bot_token: &str,
+    webhook_url: Option<&str>,
+) -> Result<(), ServerFnError> {
+    let configured_webhook = webhook_url.map(str::trim).filter(|value| !value.is_empty());
+    let actual_webhook = fetch_webhook_url(bot_token).await?;
+    match configured_webhook {
+        Some(expected) if actual_webhook == expected => Ok(()),
+        Some(_) => Err(ServerFnError::new(
+            "Telegram webhook is not pointing at this Finelor instance yet. Restart the app and try again.",
+        )),
+        None if actual_webhook.is_empty() => Ok(()),
+        None => Err(ServerFnError::new(
+            "Telegram is still configured for webhook delivery. Restart the app so it can switch to polling mode, then try again.",
+        )),
+    }
+}
+
+#[cfg(feature = "ssr")]
+async fn fetch_webhook_url(bot_token: &str) -> Result<String, ServerFnError> {
+    let url = format!("https://api.telegram.org/bot{}/getWebhookInfo", bot_token);
+    let response = reqwest::Client::new()
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| ServerFnError::new(format!("Telegram getWebhookInfo failed: {}", e)))?;
+    if !response.status().is_success() {
+        return Err(ServerFnError::new(
+            "Telegram getWebhookInfo returned an error.",
+        ));
+    }
+    let body = response
+        .json::<TelegramWebhookInfoResponse>()
+        .await
+        .map_err(|e| ServerFnError::new(format!("Telegram getWebhookInfo parse failed: {}", e)))?;
+    if !body.ok {
+        return Err(ServerFnError::new("Telegram webhook info was rejected."));
+    }
+    Ok(body.result.map(|info| info.url).unwrap_or_default())
+}
+
+#[cfg(feature = "ssr")]
+pub async fn fetch_channel_avatar_data_url(
+    bot_token: &str,
+    channel_identifier: &str,
+    metadata: Option<&serde_json::Value>,
+) -> Result<Option<String>, ServerFnError> {
+    let client = reqwest::Client::new();
+    let file_id =
+        match fetch_chat_photo_file_id(&client, bot_token, channel_identifier).await? {
+            Some(file_id) => Some(file_id),
+            None => {
+                let user_id = metadata_string(metadata, &["user", "id"]);
+                match user_id {
+                    Some(user_id) => fetch_user_photo_file_id(&client, bot_token, &user_id).await?,
+                    None => None,
+                }
+            }
+        };
+    let Some(file_id) = file_id else { return Ok(None); };
+    let Some(file_path) = fetch_file_path(&client, bot_token, &file_id).await? else { return Ok(None); };
+    let url = format!("https://api.telegram.org/file/bot{}/{}", bot_token, file_path);
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| ServerFnError::new(format!("Telegram avatar download failed: {}", e)))?;
+    if !response.status().is_success() {
+        return Ok(None);
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| ServerFnError::new(format!("Telegram avatar read failed: {}", e)))?;
+    if bytes.is_empty() || bytes.len() > 1_000_000 {
+        return Ok(None);
+    }
+    let mime = avatar_mime_type(&file_path);
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Ok(Some(format!("data:{};base64,{}", mime, encoded)))
+}
+
+#[cfg(feature = "ssr")]
+fn metadata_string(metadata: Option<&serde_json::Value>, path: &[&str]) -> Option<String> {
+    let mut value = metadata?;
+    for key in path {
+        value = value.get(*key)?;
+    }
+    value.as_str().map(str::trim).filter(|v| !v.is_empty()).map(ToOwned::to_owned)
+}
+
+#[cfg(feature = "ssr")]
+async fn fetch_chat_photo_file_id(
+    client: &reqwest::Client,
+    bot_token: &str,
+    chat_id: &str,
+) -> Result<Option<String>, ServerFnError> {
+    let response = client
+        .get(format!("https://api.telegram.org/bot{}/getChat", bot_token))
+        .query(&[("chat_id", chat_id)])
+        .send()
+        .await
+        .map_err(|e| ServerFnError::new(format!("Telegram getChat failed: {}", e)))?;
+    if !response.status().is_success() {
+        return Ok(None);
+    }
+    let body = response
+        .json::<TelegramApiResponse<TelegramChatInfo>>()
+        .await
+        .map_err(|e| ServerFnError::new(format!("Telegram getChat parse failed: {}", e)))?;
+    if !body.ok {
+        return Ok(None);
+    }
+    Ok(body.result.and_then(|chat| chat.photo).map(|photo| photo.small_file_id))
+}
+
+#[cfg(feature = "ssr")]
+async fn fetch_user_photo_file_id(
+    client: &reqwest::Client,
+    bot_token: &str,
+    user_id: &str,
+) -> Result<Option<String>, ServerFnError> {
+    let response = client
+        .get(format!("https://api.telegram.org/bot{}/getUserProfilePhotos", bot_token))
+        .query(&[("user_id", user_id), ("limit", "1")])
+        .send()
+        .await
+        .map_err(|e| ServerFnError::new(format!("Telegram getUserProfilePhotos failed: {}", e)))?;
+    if !response.status().is_success() {
+        return Ok(None);
+    }
+    let body = response
+        .json::<TelegramApiResponse<TelegramUserProfilePhotos>>()
+        .await
+        .map_err(|e| ServerFnError::new(format!("Telegram getUserProfilePhotos parse failed: {}", e)))?;
+    if !body.ok {
+        return Ok(None);
+    }
+    Ok(body
+        .result
+        .and_then(|photos| photos.photos.into_iter().next())
+        .and_then(|photo_sizes| photo_sizes.into_iter().next())
+        .map(|photo| photo.file_id))
+}
+
+#[cfg(feature = "ssr")]
+async fn fetch_file_path(
+    client: &reqwest::Client,
+    bot_token: &str,
+    file_id: &str,
+) -> Result<Option<String>, ServerFnError> {
+    let response = client
+        .get(format!("https://api.telegram.org/bot{}/getFile", bot_token))
+        .query(&[("file_id", file_id)])
+        .send()
+        .await
+        .map_err(|e| ServerFnError::new(format!("Telegram getFile failed: {}", e)))?;
+    if !response.status().is_success() {
+        return Ok(None);
+    }
+    let body = response
+        .json::<TelegramApiResponse<TelegramFileInfo>>()
+        .await
+        .map_err(|e| ServerFnError::new(format!("Telegram getFile parse failed: {}", e)))?;
+    if !body.ok {
+        return Ok(None);
+    }
+    Ok(body.result.and_then(|file| file.file_path))
+}
+
+#[cfg(feature = "ssr")]
+fn avatar_mime_type(file_path: &str) -> &'static str {
+    let lower = file_path.to_ascii_lowercase();
+    if lower.ends_with(".png") {
+        "image/png"
+    } else if lower.ends_with(".webp") {
+        "image/webp"
+    } else {
+        "image/jpeg"
+    }
 }
 
 #[cfg(test)]

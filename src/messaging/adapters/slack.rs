@@ -149,6 +149,7 @@ async fn handle_slack_command(
             "entrypoint": "slash_command",
             "command": event.command.0,
             "channel_name": event.channel_name,
+            "channel_type": "channel",
         }),
     );
     if !slack_channel_allowed(&state, &source.channel_identifier) {
@@ -519,11 +520,42 @@ fn slack_channel_allowed(state: &AgentGatewayState, channel_id: &str) -> bool {
 }
 
 async fn ensure_slack_channel_identity(state: &AgentGatewayState, source: &MessageSource) {
-    let metadata = json!({
+    let resolved_channel_name = resolve_slack_channel_name(state, source).await;
+    let incoming_metadata = json!({
         "team_id": source.metadata.get("team_id").and_then(Value::as_str),
+        "team_name": source.metadata.get("team_name").and_then(Value::as_str),
+        "channel_name": resolved_channel_name.as_deref(),
+        "channel_type": source.metadata.get("channel_type").and_then(Value::as_str),
         "last_user_id": source.profile_identifier,
         "last_message_ts": source.message_id,
     });
+
+    let existing_metadata = match sqlx::query_scalar::<_, Option<Value>>(
+        r#"
+        SELECT metadata
+        FROM channel_identities
+        WHERE channel_type = $1 AND channel_identifier = $2
+        LIMIT 1
+        "#,
+    )
+    .bind(db::ChannelType::Slack.as_str())
+    .bind(&source.channel_identifier)
+    .fetch_optional(&state.pool)
+    .await
+    {
+        Ok(Some(Some(metadata))) => Some(metadata),
+        Ok(Some(None)) | Ok(None) => None,
+        Err(err) => {
+            warn!(error = %err, "Failed to read Slack channel identity");
+            return;
+        }
+    };
+
+    let Some(mut merged_metadata) = existing_metadata else {
+        return;
+    };
+    merge_json_object(&mut merged_metadata, incoming_metadata);
+
     if let Err(err) = sqlx::query(
         r#"
         UPDATE channel_identities
@@ -533,35 +565,67 @@ async fn ensure_slack_channel_identity(state: &AgentGatewayState, source: &Messa
     )
     .bind(db::ChannelType::Slack.as_str())
     .bind(&source.channel_identifier)
-    .bind(&metadata)
+    .bind(&merged_metadata)
     .execute(&state.pool)
     .await
     {
         warn!(error = %err, "Failed to update Slack channel identity");
-        return;
+    }
+}
+
+async fn resolve_slack_channel_name(
+    state: &AgentGatewayState,
+    source: &MessageSource,
+) -> Option<String> {
+    let existing_name = source
+        .metadata
+        .get("channel_name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    if existing_name.is_some() {
+        return existing_name;
     }
 
-    let exists = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM channel_identities WHERE channel_type = $1 AND channel_identifier = $2)",
-    )
-    .bind(db::ChannelType::Slack.as_str())
-    .bind(&source.channel_identifier)
-    .fetch_one(&state.pool)
-    .await;
-    if matches!(exists, Ok(true)) {
-        return;
+    let channel_type = source
+        .metadata
+        .get("channel_type")
+        .and_then(Value::as_str)
+        .map(|value| value.to_ascii_lowercase());
+    if matches!(channel_type.as_deref(), Some("im") | Some("mpim")) {
+        return None;
+    }
+    if source.channel_identifier.starts_with('D') {
+        return None;
     }
 
-    if let Err(err) = db::insert_channel_identity(
-        &state.pool,
-        db::ChannelType::Slack.as_str(),
-        &source.channel_identifier,
-        Some(metadata),
-    )
-    .await
-    {
-        warn!(error = %err, "Failed to insert Slack channel identity");
+    let response = reqwest::Client::new()
+        .get("https://slack.com/api/conversations.info")
+        .bearer_auth(&state.config.messaging.slack.bot_token)
+        .query(&[("channel", source.channel_identifier.as_str())])
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
     }
+
+    let payload = response
+        .json::<serde_json::Value>()
+        .await
+        .ok()?;
+    if payload.get("ok").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+
+    payload
+        .get("channel")
+        .and_then(|channel| channel.get("name"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 #[derive(Clone)]

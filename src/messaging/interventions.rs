@@ -395,6 +395,10 @@ async fn accounting_target(
         FROM channel_identities
         WHERE active = TRUE
           AND channel_type = $1
+          AND (
+              channel_type != 'SLACK'
+              OR json_extract(metadata, '$.connected_by_user_id') IS NOT NULL
+          )
         ORDER BY created_at ASC
         LIMIT 1
         "#,

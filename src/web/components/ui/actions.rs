@@ -104,11 +104,13 @@ pub fn ActionButton(
     #[prop(default = ButtonKind::Default)] kind: ButtonKind,
     #[prop(default = ButtonSize::Md)] size: ButtonSize,
     #[prop(default = false)] full_width: bool,
+    #[prop(default = false)] disabled: bool,
 ) -> impl IntoView {
     view! {
         <button
             type="button"
             class=button_class(kind, size, full_width, false)
+            disabled=disabled
             on:click=on_click
         >
             {children()}
@@ -123,12 +125,14 @@ pub fn IconButton(
     on_click: impl Fn(leptos::ev::MouseEvent) + 'static,
     #[prop(default = ButtonKind::Ghost)] kind: ButtonKind,
     #[prop(default = ButtonSize::Md)] size: ButtonSize,
+    #[prop(default = false)] disabled: bool,
 ) -> impl IntoView {
     view! {
         <button
             type="button"
             class=button_class(kind, size, false, true)
             aria-label=label
+            disabled=disabled
             on:click=on_click
         >
             {children()}
