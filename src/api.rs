@@ -17,6 +17,8 @@ use crate::{
     config::AppConfig,
     db::{self, ApiKey, DbPool},
     ingestion::{self, DocumentArtifactInput, IngestionInput},
+    messaging::{commands::describe_document_why, intents::normalize_short_ref},
+    query::{document_ref_by_short_ref, document_status_counts},
     queue::QueueProducer,
     web::events::AppEventBus,
 };
@@ -36,7 +38,9 @@ where
 {
     Router::new()
         .route("/documents", post(create_document).get(list_documents))
+        .route("/documents/status", get(document_status))
         .route("/documents/{short_ref}", get(get_document))
+        .route("/documents/{short_ref}/explain", get(explain_document))
         .route("/documents/{short_ref}/file", get(get_document_file))
 }
 
@@ -154,6 +158,21 @@ pub struct AccountingRowResponse {
     pub is_debit: Option<bool>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct DocumentStatusResponse {
+    pub processing: i64,
+    pub pending_review: i64,
+    pub export_ready: i64,
+    pub exported: i64,
+    pub failed: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DocumentExplainResponse {
+    pub short_ref: String,
+    pub explanation: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct DocumentListQuery {
     pub limit: Option<i64>,
@@ -163,6 +182,22 @@ pub struct DocumentListQuery {
     pub search: Option<String>,
 }
 
+async fn document_status(
+    _auth: ApiKeyAuth,
+    State(state): State<PublicApiState>,
+) -> Result<Json<DocumentStatusResponse>, (StatusCode, Json<serde_json::Value>)> {
+    let counts = document_status_counts(&state.pool)
+        .await
+        .map_err(|_| server_error("Document status query failed"))?;
+    Ok(Json(DocumentStatusResponse {
+        processing: counts.processing_count,
+        pending_review: counts.pending_count,
+        export_ready: counts.ready_count,
+        exported: counts.exported_count,
+        failed: counts.failed_count,
+    }))
+}
+
 async fn create_document(
     _auth: ApiKeyAuth,
     State(state): State<PublicApiState>,
@@ -170,7 +205,7 @@ async fn create_document(
     mut multipart: Multipart,
 ) -> Result<Json<CreateDocumentResponse>, (StatusCode, Json<serde_json::Value>)> {
     let mut file_bytes = Vec::new();
-    let mut filename = None;
+    let mut filename_override = None;
     let mut original_filename = None;
     let mut mime_type = None;
     let mut source_id = None;
@@ -183,9 +218,6 @@ async fn create_document(
         let name = field.name().unwrap_or("").to_string();
         match name.as_str() {
             "file" => {
-                if filename.is_none() {
-                    filename = field.file_name().map(ToOwned::to_owned);
-                }
                 if original_filename.is_none() {
                     original_filename = field.file_name().map(ToOwned::to_owned);
                 }
@@ -203,7 +235,7 @@ async fn create_document(
                     .bytes()
                     .await
                     .map_err(|e| bad_request(&format!("Invalid filename field: {e}")))?;
-                filename = Some(String::from_utf8_lossy(&bytes).trim().to_string());
+                filename_override = Some(String::from_utf8_lossy(&bytes).trim().to_string());
             }
             "mime_type" => {
                 let bytes = field
@@ -252,6 +284,9 @@ async fn create_document(
         .as_ref()
         .map(|value| format!("API_{value}"))
         .or_else(|| Some(format!("api_{doc_id}")));
+    let display_filename = filename_override
+        .filter(|value| !value.is_empty())
+        .or(original_filename);
 
     let result = ingestion::ingest_document(
         &state.pool,
@@ -269,7 +304,7 @@ async fn create_document(
                 profile_identifier: profile_identifier.clone(),
                 external_artifact_id,
                 source_timestamp,
-                original_filename: original_filename.or(filename),
+                original_filename: display_filename,
                 metadata: json!({
                     "source": "API",
                     "source_id": source_id,
@@ -412,13 +447,55 @@ async fn get_document(
     Ok(Json(document_details_from_row(row, accounting_rows)))
 }
 
+async fn explain_document(
+    _auth: ApiKeyAuth,
+    State(state): State<PublicApiState>,
+    Path(short_ref): Path<String>,
+) -> Result<Json<DocumentExplainResponse>, (StatusCode, Json<serde_json::Value>)> {
+    let Some(short_ref) = normalize_short_ref(&short_ref) else {
+        return Err(bad_request("Invalid document reference"));
+    };
+    if document_ref_by_short_ref(&state.pool, &short_ref)
+        .await
+        .map_err(|_| server_error("Document query failed"))?
+        .is_none()
+    {
+        return Err((StatusCode::NOT_FOUND, Json(json!({"error": "not_found"}))));
+    }
+
+    let explanation = describe_document_why(&state.pool, &short_ref)
+        .await
+        .map_err(|_| server_error("Document explanation failed"))?;
+    Ok(Json(DocumentExplainResponse {
+        short_ref,
+        explanation,
+    }))
+}
+
 async fn get_document_file(
     _auth: ApiKeyAuth,
     State(state): State<PublicApiState>,
     Path(short_ref): Path<String>,
 ) -> Result<Response, (StatusCode, Json<serde_json::Value>)> {
     let row = sqlx::query(
-        "SELECT original_path, mime_type, filename FROM documents WHERE short_ref = $1 LIMIT 1",
+        r#"
+        SELECT
+          d.original_path,
+          d.mime_type,
+          COALESCE(
+            (
+              SELECT NULLIF(TRIM(da.original_filename), '')
+              FROM document_artifacts da
+              WHERE da.document_id = d.id
+              ORDER BY da.created_at DESC, da.id DESC
+              LIMIT 1
+            ),
+            d.filename
+          ) AS filename
+        FROM documents d
+        WHERE d.short_ref = $1
+        LIMIT 1
+        "#,
     )
     .bind(short_ref.trim())
     .fetch_optional(&state.pool)
@@ -521,7 +598,17 @@ async fn document_details_row(
     sqlx::query(
         r#"
         SELECT
-          d.id, d.short_ref, d.status, d.filename, d.mime_type, d.original_path,
+          d.id, d.short_ref, d.status, d.mime_type, d.original_path,
+          COALESCE(
+            (
+              SELECT NULLIF(TRIM(da.original_filename), '')
+              FROM document_artifacts da
+              WHERE da.document_id = d.id
+              ORDER BY da.created_at DESC, da.id DESC
+              LIMIT 1
+            ),
+            d.filename
+          ) AS filename,
           (
             SELECT parsed_value FROM extracted_fields ef
             WHERE ef.document_id = d.id AND ef.field_type = 'supplier_name'

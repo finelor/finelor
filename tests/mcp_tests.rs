@@ -21,18 +21,22 @@ async fn create_test_user(pool: &sqlx::SqlitePool) -> i64 {
 
 async fn create_test_mcp_key(pool: &sqlx::SqlitePool) -> String {
     let user_id = create_test_user(pool).await;
-    finelor::db::create_mcp_key(pool, "Test MCP key", user_id)
+    let token = finelor::db::create_mcp_key(pool, "Test MCP key", user_id)
         .await
         .expect("create mcp key")
-        .token
+        .token;
+    assert!(token.starts_with("finelor_mcp_"));
+    token
 }
 
 async fn create_test_api_key(pool: &sqlx::SqlitePool) -> String {
     let user_id = create_test_user(pool).await;
-    finelor::db::create_api_key(pool, "Test API key", user_id)
+    let token = finelor::db::create_api_key(pool, "Test API key", user_id)
         .await
         .expect("create api key")
-        .token
+        .token;
+    assert!(token.starts_with("finelor_api_"));
+    token
 }
 
 fn mcp_app(pool: sqlx::SqlitePool) -> Router {

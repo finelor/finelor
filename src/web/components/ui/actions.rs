@@ -156,9 +156,19 @@ pub fn LinkButton(
 }
 
 #[component]
-pub fn TextLink(children: Children, href: &'static str) -> impl IntoView {
+pub fn TextLink(
+    children: Children,
+    href: &'static str,
+    #[prop(optional)] target: Option<&'static str>,
+    #[prop(optional)] rel: Option<&'static str>,
+) -> impl IntoView {
     view! {
-        <a href=href class="link link-hover text-xs font-semibold text-base-content/65">
+        <a
+            href=href
+            target=target
+            rel=rel
+            class="link link-hover inline-flex items-center gap-1 text-xs font-semibold text-base-content/65"
+        >
             {children()}
         </a>
     }

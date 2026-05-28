@@ -18,10 +18,12 @@ async fn create_test_api_key(pool: &sqlx::SqlitePool) -> String {
     .await
     .expect("insert test user");
 
-    finelor::db::create_api_key(pool, "Test key", user_id)
+    let token = finelor::db::create_api_key(pool, "Test key", user_id)
         .await
         .expect("create api key")
-        .token
+        .token;
+    assert!(token.starts_with("finelor_api_"));
+    token
 }
 
 fn public_api_app(pool: sqlx::SqlitePool) -> Router {
@@ -128,6 +130,29 @@ async fn public_api_ingests_lists_details_and_downloads_with_valid_key() {
         Some(expected_download_url.as_str())
     );
 
+    let status_response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("GET")
+                .uri("/documents/status")
+                .header("Authorization", format!("Bearer {token}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(status_response.status().is_success());
+    let status_body = axum::body::to_bytes(status_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let status: serde_json::Value = serde_json::from_slice(&status_body).unwrap();
+    assert_eq!(status["processing"].as_i64(), Some(1));
+    assert_eq!(status["pending_review"].as_i64(), Some(0));
+    assert_eq!(status["export_ready"].as_i64(), Some(0));
+    assert_eq!(status["exported"].as_i64(), Some(0));
+    assert_eq!(status["failed"].as_i64(), Some(0));
+
     let detail_response = app
         .clone()
         .oneshot(
@@ -145,6 +170,7 @@ async fn public_api_ingests_lists_details_and_downloads_with_valid_key() {
         .await
         .unwrap();
     let detail: serde_json::Value = serde_json::from_slice(&detail_body).unwrap();
+    assert_eq!(detail["filename"].as_str(), Some("invoice.pdf"));
     assert_eq!(
         detail["download_url"].as_str(),
         Some(expected_download_url.as_str())
@@ -152,6 +178,31 @@ async fn public_api_ingests_lists_details_and_downloads_with_valid_key() {
     assert!(
         detail.get("original_path").is_none(),
         "public detail must not expose original_path"
+    );
+
+    let explain_response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("GET")
+                .uri(format!("/documents/{short_ref}/explain"))
+                .header("Authorization", format!("Bearer {token}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(explain_response.status().is_success());
+    let explain_body = axum::body::to_bytes(explain_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let explain: serde_json::Value = serde_json::from_slice(&explain_body).unwrap();
+    assert_eq!(explain["short_ref"].as_str(), Some(short_ref.as_str()));
+    assert!(
+        explain["explanation"]
+            .as_str()
+            .unwrap_or_default()
+            .contains(&format!("{short_ref} is currently"))
     );
 
     let file_response = app
@@ -173,6 +224,13 @@ async fn public_api_ingests_lists_details_and_downloads_with_valid_key() {
             .and_then(|value| value.to_str().ok()),
         Some("application/pdf")
     );
+    assert_eq!(
+        file_response
+            .headers()
+            .get(axum::http::header::CONTENT_DISPOSITION)
+            .and_then(|value| value.to_str().ok()),
+        Some("attachment; filename=\"invoice.pdf\"")
+    );
     let file_body = axum::body::to_bytes(file_response.into_body(), usize::MAX)
         .await
         .unwrap();
@@ -192,6 +250,135 @@ async fn public_api_ingests_lists_details_and_downloads_with_valid_key() {
             .as_deref(),
         Some(token.as_str())
     );
+}
+
+#[tokio::test]
+async fn public_api_filename_field_overrides_upload_part_filename_for_display() {
+    let pool = common::in_memory_pool().await;
+    let token = create_test_api_key(&pool).await;
+    let app = public_api_app(pool.clone());
+
+    let boundary = "----FinelorBoundary";
+    let body = concat!(
+        "------FinelorBoundary\r\n",
+        "Content-Disposition: form-data; name=\"file\"; filename=\"invoice.pdf\"\r\n",
+        "Content-Type: application/pdf\r\n\r\n",
+        "%PDF-1.4 public api filename override test\r\n",
+        "------FinelorBoundary\r\n",
+        "Content-Disposition: form-data; name=\"filename\"\r\n\r\n",
+        "custom-name.pdf\r\n",
+        "------FinelorBoundary--\r\n"
+    );
+
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/documents")
+                .header("Authorization", format!("Bearer {token}"))
+                .header(
+                    "Content-Type",
+                    format!("multipart/form-data; boundary={boundary}"),
+                )
+                .body(axum::body::Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        response.status().is_success(),
+        "upload failed: {}",
+        response.status()
+    );
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let short_ref = created["short_ref"].as_str().unwrap().to_string();
+
+    let detail_response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("GET")
+                .uri(format!("/documents/{short_ref}"))
+                .header("Authorization", format!("Bearer {token}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(detail_response.status().is_success());
+    let detail_body = axum::body::to_bytes(detail_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let detail: serde_json::Value = serde_json::from_slice(&detail_body).unwrap();
+    assert_eq!(detail["filename"].as_str(), Some("custom-name.pdf"));
+
+    let file_response = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("GET")
+                .uri(format!("/documents/{short_ref}/file"))
+                .header("Authorization", format!("Bearer {token}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(file_response.status().is_success());
+    assert_eq!(
+        file_response
+            .headers()
+            .get(axum::http::header::CONTENT_DISPOSITION)
+            .and_then(|value| value.to_str().ok()),
+        Some("attachment; filename=\"custom-name.pdf\"")
+    );
+
+    let stored_filename: String =
+        sqlx::query_scalar("SELECT filename FROM documents WHERE short_ref = $1")
+            .bind(&short_ref)
+            .fetch_one(&pool)
+            .await
+            .expect("stored filename");
+    assert_ne!(stored_filename, "custom-name.pdf");
+
+    let artifact_filename: String = sqlx::query_scalar(
+        r#"
+        SELECT original_filename
+        FROM document_artifacts
+        WHERE document_id = (SELECT id FROM documents WHERE short_ref = $1)
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(&short_ref)
+    .fetch_one(&pool)
+    .await
+    .expect("artifact filename");
+    assert_eq!(artifact_filename, "custom-name.pdf");
+}
+
+#[tokio::test]
+async fn public_api_explain_returns_not_found_for_unknown_document() {
+    let pool = common::in_memory_pool().await;
+    let token = create_test_api_key(&pool).await;
+    let app = public_api_app(pool);
+
+    let response = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("GET")
+                .uri("/documents/D999999/explain")
+                .header("Authorization", format!("Bearer {token}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

@@ -13,7 +13,7 @@ pub type DbPool = SqlitePool;
 pub type DbRow = SqliteRow;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
-const API_KEY_TOKEN_PREFIX: &str = "finelor_";
+const API_KEY_TOKEN_PREFIX: &str = "finelor_api_";
 const MCP_KEY_TOKEN_PREFIX: &str = "finelor_mcp_";
 pub const DEFAULT_MCP_CAPABILITIES: &str = r#"["documents:read","documents:explain"]"#;
 
@@ -447,6 +447,25 @@ pub enum ChannelType {
     /// Email ingestion.
     #[serde(rename = "EMAIL")]
     Email,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_api_keys_use_api_prefix() {
+        let token = generate_api_key_token();
+
+        assert!(token.starts_with("finelor_api_"));
+    }
+
+    #[test]
+    fn generated_mcp_keys_keep_mcp_prefix() {
+        let token = generate_mcp_key_token();
+
+        assert!(token.starts_with("finelor_mcp_"));
+    }
 }
 
 impl ChannelType {

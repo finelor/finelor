@@ -21,7 +21,9 @@ Available endpoints:
 ```text
 POST /api/v1/documents
 GET  /api/v1/documents
+GET  /api/v1/documents/status
 GET  /api/v1/documents/{short_ref}
+GET  /api/v1/documents/{short_ref}/explain
 GET  /api/v1/documents/{short_ref}/file
 ```
 
@@ -148,6 +150,32 @@ Pagination fields:
 | `offset` | integer | Effective offset. |
 | `total` | integer | Total matching documents before pagination. |
 
+## GET /api/v1/documents/status
+
+Returns document counts grouped by processing status category.
+
+Response DTO:
+
+```json
+{
+  "processing": 3,
+  "pending_review": 1,
+  "export_ready": 2,
+  "exported": 10,
+  "failed": 0
+}
+```
+
+Fields:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `processing` | integer | Documents currently in the processing pipeline. |
+| `pending_review` | integer | Documents waiting for human review. |
+| `export_ready` | integer | Documents ready for export. |
+| `exported` | integer | Documents already exported. |
+| `failed` | integer | Documents in failed state. |
+
 ## GET /api/v1/documents/{short_ref}
 
 Returns detailed information for one document.
@@ -225,6 +253,26 @@ Fields:
 | `amount` | string or null | Assignment amount serialized as a string to preserve decimal precision. |
 | `vat_code` | string or null | VAT code when assigned. |
 | `is_debit` | boolean or null | Whether the row is a debit entry. |
+
+## GET /api/v1/documents/{short_ref}/explain
+
+Returns a human-readable explanation of the current document state.
+
+Response DTO:
+
+```json
+{
+  "short_ref": "D000123",
+  "explanation": "D000123 is currently EXPORT_READY.\nReason: this document is healthy and ready for export.\nReview: AUTO_APPROVED\nConfidence: 91%"
+}
+```
+
+Fields:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `short_ref` | string | Stable public document reference. |
+| `explanation` | string | Human-readable explanation of the current state and relevant review details. |
 
 ## GET /api/v1/documents/{short_ref}/file
 

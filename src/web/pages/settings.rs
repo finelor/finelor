@@ -10,7 +10,7 @@ use crate::web::components::ui::{
     SettingsDrawerNavBottom, SettingsDrawerNavTop, SettingsNav, SettingsNavButton,
     SettingsNavDivider, SettingsNavLink, SettingsNavSection, SettingsSubTabButton,
     SettingsSubTabList, SettingsSubTabPanel, SettingsSubTabs, SidebarLayout, Space, Stack,
-    TextInput, ToastAlert, ToastViewport, Tone,
+    TextInput, TextLink, ToastAlert, ToastViewport, Tone,
 };
 use crate::web::server::api_keys::{
     ApiKeySummary, CreateApiKey, RemoveApiKey, RevokeApiKey, UnrevokeApiKey, list_api_keys,
@@ -204,11 +204,21 @@ fn McpKeysPanel() -> impl IntoView {
     });
 
     view! {
-        <Stack top=Space::Md gap=Space::Md>
+        <Stack top=Space::Md gap=Space::Lg>
             <Inline justify=Justify::Between stack_mobile=true>
                 <Stack gap=Space::None>
                     <PanelTitle>"MCP keys"</PanelTitle>
                     <FineText>"MCP keys used by AI agents to access Finelor"</FineText>
+                    <FineText>
+                        <TextLink
+                            href="https://github.com/finelor/finelor/blob/main/docs/mcp.md"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                        >
+                            "View MCP docs"
+                            <Icon icon=LuArrowUpRight width="0.85rem" height="0.85rem" />
+                        </TextLink>
+                    </FineText>
                 </Stack>
                 <ActionButton
                     kind=ButtonKind::Primary
@@ -671,11 +681,21 @@ fn ApiKeysPanel() -> impl IntoView {
     });
 
     view! {
-        <Stack top=Space::Md gap=Space::Md>
+        <Stack top=Space::Md gap=Space::Lg>
             <Inline justify=Justify::Between stack_mobile=true>
                 <Stack gap=Space::None>
                     <PanelTitle>"API keys"</PanelTitle>
                     <FineText>"API keys used for authentication to the public API"</FineText>
+                    <FineText>
+                        <TextLink
+                            href="https://github.com/finelor/finelor/blob/main/docs/api.md"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                        >
+                            "View API docs"
+                            <Icon icon=LuArrowUpRight width="0.85rem" height="0.85rem" />
+                        </TextLink>
+                    </FineText>
                 </Stack>
                 <ActionButton
                     kind=ButtonKind::Primary
