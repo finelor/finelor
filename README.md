@@ -17,6 +17,7 @@ We are building and sharing openly the foundational infrastructure for autonomou
 - approval workflows
 - export to accounting systems
 - human-in-the-loop clarifications
+- API and MCP for agent communication
 - intelligent conversational support through Telegram and Slack
 - Web control panel app
 - And many more coming soon
