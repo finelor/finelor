@@ -61,15 +61,16 @@ Create a Slack app via the Slack app manifest.
 2. Click `Create New App`.
 3. Choose `From an app manifest`.
 4. Select your Slack workspace.
-5. Copy the contents of [`docs/slack-app-manifest.yaml`](docs/slack-app-manifest.yaml) into Slack. See Slack's [app manifest docs](https://docs.slack.dev/app-manifests) for details.
+5. Copy the contents of [`docs/slack-app-manifest.yaml`](docs/slack-app-manifest.yaml) into the **YAML** tab in Slack. See Slack's [app manifest docs](https://docs.slack.dev/app-manifests) for details.
 6. Click through Slack's review steps and create the app.
-7. In the app settings, open **OAuth & Permissions** and click `Install to Workspace`.
-8. Copy the **Bot User OAuth Token**. It starts with `xoxb-`.
-9. Open **Basic Information > App-Level Tokens** and generate a token with the [`connections:write`](https://docs.slack.dev/reference/scopes/connections.write/) scope. It starts with `xapp-`.
-10. Confirm [Socket Mode](https://api.slack.com/apis/connections/socket) is enabled for the app.
-11. Set `MESSAGING_PROVIDER` to `slack` in `.env`.
-12. Add the `xoxb-` token to `MESSAGING_SLACK_BOT_TOKEN` in `.env`.
-13. Add the `xapp-` token to `MESSAGING_SLACK_APP_TOKEN` in `.env`.
+7. In the app settings, open **OAuth & Permissions** and click `Install to <YOUR WORKSPACE NAME>`.
+8. Click `Allow` on the opened authorization page.
+9. Copy the **Bot User OAuth Token**. It starts with `xoxb-`.
+10. Open **Basic Information > App-Level Tokens** and generate a token with the [`connections:write`](https://docs.slack.dev/reference/scopes/connections.write/) scope. It starts with `xapp-`.
+11. Confirm [Socket Mode](https://api.slack.com/apis/connections/socket) is enabled for the app in **App Settings > Socket Mode**.
+12. Set `MESSAGING_PROVIDER` to `slack` in `.env`.
+13. Add the `xoxb-` token to `MESSAGING_SLACK_BOT_TOKEN` in `.env`.
+14. Add the `xapp-` token to `MESSAGING_SLACK_APP_TOKEN` in `.env`.
 
 ### Option A (Recommended): Run in Docker (everything in Docker)
 
