@@ -475,7 +475,6 @@ mod tests {
                 slack: SlackConfig {
                     bot_token: String::new(),
                     app_token: String::new(),
-                    allowed_channel_ids: Vec::new(),
                 },
             },
             upload: UploadConfig {

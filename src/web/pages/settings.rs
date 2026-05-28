@@ -2,22 +2,23 @@ use crate::web::client::{copy_to_clipboard, redirect, run_after_ms, subscribe_ap
 use crate::web::components::ui::{
     ActionButton, Alert, AlertKind, Align, Avatar, Badge, BadgeStyle, Banner, BannerProminence,
     BodyText, Button, ButtonKind, ButtonSize, ButtonType, Card, CenterFineText, Cluster,
-    DesktopSidebar, Drawer, DrawerContent, DrawerSide, Eyebrow, FineText, FormField, FormHelp,
-    Grid, GridCols, HiddenPlaceholder, IconButton, IconText, InfoItem, Inline, InlineSurface,
-    InlineText, Justify, LinkButton, LoadingCard, Modal, ModalActionGap, ModalActions,
-    ModalCloseButton, ModalHeader, ModalInstruction, ModalTitle, NestedCard, PanelTitle, QrCodeBox,
-    SETTINGS_DRAWER_ID, SavedBadge, ScrollContent, SettingsDrawerBrand, SettingsDrawerNav,
-    SettingsDrawerNavBottom, SettingsDrawerNavTop, SettingsNav, SettingsNavButton,
-    SettingsNavDivider, SettingsNavLink, SettingsNavSection, SettingsSubTabButton,
-    SettingsSubTabList, SettingsSubTabPanel, SettingsSubTabs, SidebarLayout, Space, Stack,
-    TextInput, ToastAlert, ToastViewport, Tone,
+    DesktopSidebar, Divider, Drawer, DrawerContent, DrawerSide, Eyebrow, FineText, FormField,
+    FormHelp, Grid, GridCols, HiddenPlaceholder, IconButton, IconText, InfoItem, Inline,
+    InlineSurface, InlineText, Justify, LinkButton, LoadingCard, Modal, ModalActionGap,
+    ModalActions, ModalCloseButton, ModalHeader, ModalInstruction, ModalTitle, NestedCard,
+    PanelTitle, QrCodeBox, SETTINGS_DRAWER_ID, SavedBadge, ScrollContent, SelectableListRow,
+    SettingsDrawerBrand, SettingsDrawerNav, SettingsDrawerNavBottom, SettingsDrawerNavTop,
+    SettingsNav, SettingsNavButton, SettingsNavDivider, SettingsNavLink, SettingsNavSection,
+    SettingsSubTabButton, SettingsSubTabList, SettingsSubTabPanel, SettingsSubTabs, SidebarLayout,
+    Space, Stack, TextInput, ToastAlert, ToastViewport, Tone,
 };
 use crate::web::server::auth::{AuthUser, Logout, get_session_user};
 use crate::web::server::channels::{
-    AddSlackAllowedChannel, CompanyChannel, CreateTelegramConnectLink, DeleteCompanyChannel,
-    MessagingProviderStatus, RemoveSlackAllowedChannel, SlackAllowedChannel,
-    SlackChannelVerification, VerifySlackAllowedChannel, get_messaging_provider_status,
-    get_telegram_channel_avatar, list_company_channels, list_slack_allowed_channels,
+    AddSlackAllowedChannel, AddSlackAllowedUser, CompanyChannel, CreateTelegramConnectLink,
+    DeleteCompanyChannel, MessagingProviderStatus, RemoveSlackAllowedChannel, SearchSlackChannels,
+    SearchSlackUsers, SlackAllowedChannel, SlackChannelCandidate, SlackUserCandidate,
+    SlackUserVerification, get_messaging_provider_status, get_telegram_channel_avatar,
+    list_company_channels, list_slack_allowed_channels,
 };
 use crate::web::server::settings::{CompanySettings, UpdateCompanySettings, get_company_settings};
 use icondata::{
@@ -126,6 +127,17 @@ fn normalize_slack_channel_input(input: &str) -> String {
     }
 }
 
+fn normalize_slack_user_input(input: &str) -> String {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        String::new()
+    } else if trimmed.starts_with('@') {
+        trimmed.to_string()
+    } else {
+        format!("@{trimmed}")
+    }
+}
+
 #[component]
 fn TelegramChannelAvatar(channel_id: i64, label: String) -> impl IntoView {
     let avatar = Resource::new(
@@ -156,14 +168,27 @@ pub fn Settings() -> impl IntoView {
     let telegram_link_action = ServerAction::<CreateTelegramConnectLink>::new();
     let delete_channel_action = ServerAction::<DeleteCompanyChannel>::new();
     let add_slack_channel_action = ServerAction::<AddSlackAllowedChannel>::new();
-    let verify_slack_channel_action = ServerAction::<VerifySlackAllowedChannel>::new();
+    let search_slack_channels_action = ServerAction::<SearchSlackChannels>::new();
+    let add_slack_user_action = ServerAction::<AddSlackAllowedUser>::new();
+    let search_slack_users_action = ServerAction::<SearchSlackUsers>::new();
     let remove_slack_channel_action = ServerAction::<RemoveSlackAllowedChannel>::new();
     let telegram_modal_link = RwSignal::new(None);
     let slack_add_modal_open = RwSignal::new(false);
     let slack_channel_name_input = RwSignal::new(String::new());
-    let slack_verified_channel = RwSignal::<Option<SlackChannelVerification>>::new(None);
+    let slack_channel_candidates = RwSignal::<Vec<SlackChannelCandidate>>::new(Vec::new());
+    let slack_selected_channel = RwSignal::<Option<SlackChannelCandidate>>::new(None);
+    let slack_channel_search_nonce = RwSignal::new(0_u64);
+    let slack_channel_search_loading = RwSignal::new(false);
+    let slack_user_input = RwSignal::new(String::new());
+    let slack_user_candidates = RwSignal::<Vec<SlackUserCandidate>>::new(Vec::new());
+    let slack_selected_user = RwSignal::<Option<SlackUserVerification>>::new(None);
+    let slack_user_search_nonce = RwSignal::new(0_u64);
+    let slack_user_search_loading = RwSignal::new(false);
+    let slack_user_modal_open = RwSignal::new(false);
     let slack_verify_error = RwSignal::<Option<String>>::new(None);
     let slack_add_error = RwSignal::<Option<String>>::new(None);
+    let slack_user_verify_error = RwSignal::<Option<String>>::new(None);
+    let slack_user_add_error = RwSignal::<Option<String>>::new(None);
     let slack_pending_delete = RwSignal::<Option<SlackAllowedChannel>>::new(None);
     let channel_pending_delete = RwSignal::<Option<CompanyChannel>>::new(None);
     let telegram_connect_error = RwSignal::<Option<String>>::new(None);
@@ -203,7 +228,9 @@ pub fn Settings() -> impl IntoView {
     let telegram_link_value = telegram_link_action.value();
     let delete_channel_value = delete_channel_action.value();
     let add_slack_channel_value = add_slack_channel_action.value();
-    let verify_slack_channel_value = verify_slack_channel_action.value();
+    let search_slack_channels_value = search_slack_channels_action.value();
+    let add_slack_user_value = add_slack_user_action.value();
+    let search_slack_users_value = search_slack_users_action.value();
     let remove_slack_channel_value = remove_slack_channel_action.value();
 
     Effect::new(move || {
@@ -235,7 +262,9 @@ pub fn Settings() -> impl IntoView {
         if let Some(Ok(_)) = add_slack_channel_value.get() {
             slack_add_modal_open.set(false);
             slack_channel_name_input.set(String::new());
-            slack_verified_channel.set(None);
+            slack_channel_candidates.set(Vec::new());
+            slack_selected_channel.set(None);
+            slack_channel_search_loading.set(false);
             slack_verify_error.set(None);
             slack_add_error.set(None);
             refresh_nonce.update(|nonce| *nonce += 1);
@@ -245,15 +274,70 @@ pub fn Settings() -> impl IntoView {
         }
     });
     Effect::new(move || {
-        if let Some(Ok(verified)) = verify_slack_channel_value.get() {
-            slack_verified_channel.set(Some(verified));
-            slack_verify_error.set(None);
+        if let Some(Ok(_)) = add_slack_user_value.get() {
+            slack_user_modal_open.set(false);
+            slack_user_input.set(String::new());
+            slack_user_candidates.set(Vec::new());
+            slack_selected_user.set(None);
+            slack_user_search_loading.set(false);
+            slack_user_verify_error.set(None);
+            slack_user_add_error.set(None);
+            refresh_nonce.update(|nonce| *nonce += 1);
         }
-        if let Some(Err(_)) = verify_slack_channel_value.get() {
-            slack_verify_error.set(Some(
-                "Could not find that Slack channel, or the app does not have access to it."
-                    .to_string(),
-            ));
+        if let Some(Err(_)) = add_slack_user_value.get() {
+            slack_user_add_error.set(Some("Could not add Slack user DM.".to_string()));
+        }
+    });
+    Effect::new(move || {
+        if let Some(Ok(candidates)) = search_slack_channels_value.get() {
+            slack_selected_channel.set(None);
+            slack_channel_search_loading.set(false);
+            if candidates
+                .iter()
+                .all(|candidate| candidate.already_connected)
+            {
+                slack_verify_error.set(None);
+            } else if candidates.is_empty() {
+                slack_verify_error.set(Some(
+                    "Could not find that Slack channel, or the app does not have access to it."
+                        .to_string(),
+                ));
+            } else {
+                slack_verify_error.set(None);
+            }
+            slack_channel_candidates.set(candidates);
+        }
+        if let Some(Err(err)) = search_slack_channels_value.get() {
+            slack_channel_candidates.set(Vec::new());
+            slack_selected_channel.set(None);
+            slack_channel_search_loading.set(false);
+            slack_verify_error.set(Some(format!("{err}")));
+        }
+    });
+    Effect::new(move || {
+        if let Some(Ok(candidates)) = search_slack_users_value.get() {
+            slack_selected_user.set(None);
+            slack_user_search_loading.set(false);
+            if candidates
+                .iter()
+                .all(|candidate| candidate.already_connected)
+            {
+                slack_user_verify_error.set(None);
+            } else if candidates.is_empty() {
+                slack_user_verify_error.set(Some(
+                    "Could not find that Slack user, or the app does not have access to it."
+                        .to_string(),
+                ));
+            } else {
+                slack_user_verify_error.set(None);
+            }
+            slack_user_candidates.set(candidates);
+        }
+        if let Some(Err(err)) = search_slack_users_value.get() {
+            slack_user_candidates.set(Vec::new());
+            slack_selected_user.set(None);
+            slack_user_search_loading.set(false);
+            slack_user_verify_error.set(Some(format!("{err}")));
         }
     });
     Effect::new(move || {
@@ -263,13 +347,72 @@ pub fn Settings() -> impl IntoView {
             slack_channel_name_input.set(normalized);
             return;
         }
-        slack_verify_error.set(None);
+        slack_selected_channel.set(None);
         slack_add_error.set(None);
-        if let Some(verified) = slack_verified_channel.get()
-            && normalize_slack_channel_input(&verified.channel_name) != normalized
-        {
-            slack_verified_channel.set(None);
+        slack_verify_error.set(None);
+
+        let query = normalized.trim().trim_start_matches('#').to_string();
+        slack_channel_search_nonce.update(|value| *value += 1);
+        let nonce = slack_channel_search_nonce.get_untracked();
+        slack_channel_search_loading.set(false);
+
+        if query.len() < 2 {
+            slack_channel_candidates.set(Vec::new());
+            return;
         }
+
+        let dispatch_query = normalized.clone();
+        run_after_ms(500, move || {
+            if slack_channel_search_nonce.get_untracked() != nonce {
+                return;
+            }
+            slack_channel_search_loading.set(true);
+        });
+        run_after_ms(1_000, move || {
+            if slack_channel_search_nonce.get_untracked() != nonce {
+                return;
+            }
+            search_slack_channels_action.dispatch(SearchSlackChannels {
+                query: dispatch_query,
+            });
+        });
+    });
+    Effect::new(move || {
+        let current = slack_user_input.get();
+        let normalized = normalize_slack_user_input(&current);
+        if normalized != current {
+            slack_user_input.set(normalized);
+            return;
+        }
+        slack_selected_user.set(None);
+        slack_user_add_error.set(None);
+        slack_user_verify_error.set(None);
+
+        let query = normalized.trim().trim_start_matches('@').to_string();
+        slack_user_search_nonce.update(|value| *value += 1);
+        let nonce = slack_user_search_nonce.get_untracked();
+        slack_user_search_loading.set(false);
+
+        if query.len() < 2 {
+            slack_user_candidates.set(Vec::new());
+            return;
+        }
+
+        let dispatch_query = normalized.clone();
+        run_after_ms(500, move || {
+            if slack_user_search_nonce.get_untracked() != nonce {
+                return;
+            }
+            slack_user_search_loading.set(true);
+        });
+        run_after_ms(1_000, move || {
+            if slack_user_search_nonce.get_untracked() != nonce {
+                return;
+            }
+            search_slack_users_action.dispatch(SearchSlackUsers {
+                query: dispatch_query,
+            });
+        });
     });
     Effect::new(move || {
         if let Some(Ok(())) = remove_slack_channel_value.get() {
@@ -372,12 +515,19 @@ pub fn Settings() -> impl IntoView {
                         let active_slack_channels = settings
                             .slack_allowed_channels
                             .iter()
-                            .filter(|channel| channel.active)
+                            .filter(|channel| channel.active && channel.channel_type != "im")
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        let active_slack_users = settings
+                            .slack_allowed_channels
+                            .iter()
+                            .filter(|channel| channel.active && channel.channel_type == "im")
                             .cloned()
                             .collect::<Vec<_>>();
                         let has_active_telegram_channels = !active_telegram_channels.is_empty();
                         let telegram_channel_count = active_telegram_channels.len();
                         let has_active_slack_channels = !active_slack_channels.is_empty();
+                        let has_active_slack_users = !active_slack_users.is_empty();
                         let telegram_is_active_provider =
                             settings.messaging_status.active_provider == "telegram";
                         let slack_is_active_provider =
@@ -398,6 +548,7 @@ pub fn Settings() -> impl IntoView {
                         );
                         let active_telegram_channels = RwSignal::new(active_telegram_channels);
                         let active_slack_channels = RwSignal::new(active_slack_channels);
+                        let active_slack_users = RwSignal::new(active_slack_users);
                         view! {
                             <>
                                 <Drawer drawer_id=SETTINGS_DRAWER_ID>
@@ -482,8 +633,8 @@ pub fn Settings() -> impl IntoView {
                                                                                 }
                                                                             >
                                                                                 <Stack top=Space::Md gap=Space::Md>
-                                                                                    <Inline justify=Justify::Between stack_mobile=true>
-                                                                                        <Stack gap=Space::None>
+                                                                                    <Inline surface=InlineSurface::Panel>
+                                                                                        <Stack gap=Space::None shrink=true>
                                                                                             <Cluster gap=Space::Sm>
                                                                                                 <PanelTitle>{slack_workspace_title.get_value()}</PanelTitle>
                                                                                                 <Badge
@@ -496,6 +647,15 @@ pub fn Settings() -> impl IntoView {
                                                                                             <FineText>
                                                                                                 {format!("Workspace URL: {}", slack_workspace_url.get_value())}
                                                                                             </FineText>
+                                                                                        </Stack>
+                                                                                    </Inline>
+
+                                                                                    <Divider />
+
+                                                                                    <Inline justify=Justify::Between stack_mobile=true>
+                                                                                        <Stack gap=Space::None>
+                                                                                            <PanelTitle>"Allowed Slack Channels"</PanelTitle>
+                                                                                            <FineText>"Only listed channels can interact with Finelor in Slack."</FineText>
                                                                                         </Stack>
                                                                                         <ActionButton
                                                                                             kind=ButtonKind::Primary
@@ -538,6 +698,89 @@ pub fn Settings() -> impl IntoView {
                                                                                                             <Inline gap=Space::Md shrink=true>
                                                                                                                 <Avatar>
                                                                                                                     <Icon icon=LuMessageCircle width="1.1rem" height="1.1rem" />
+                                                                                                                </Avatar>
+                                                                                                                <Stack gap=Space::None shrink=true>
+                                                                                                                    <Cluster gap=Space::Sm>
+                                                                                                                        <PanelTitle>{display_name}</PanelTitle>
+                                                                                                                        <Badge tone=Tone::Success style=BadgeStyle::Soft>"Active"</Badge>
+                                                                                                                    </Cluster>
+                                                                                                                    <FineText>{subtitle}</FineText>
+                                                                                                                </Stack>
+                                                                                                            </Inline>
+                                                                                                            <Inline gap=Space::Sm>
+                                                                                                                <IconButton
+                                                                                                                    label="Remove"
+                                                                                                                    kind=ButtonKind::SoftDanger
+                                                                                                                    size=ButtonSize::Sm
+                                                                                                                    disabled=!slack_is_active_provider
+                                                                                                                    on_click=move |_| {
+                                                                                                                        if slack_is_active_provider {
+                                                                                                                            slack_pending_delete.set(Some(channel_for_remove.clone()))
+                                                                                                                        }
+                                                                                                                    }
+                                                                                                                >
+                                                                                                                    <Icon icon=LuTrash2 width="1rem" height="1rem" />
+                                                                                                                </IconButton>
+                                                                                                            </Inline>
+                                                                                                        </Inline>
+                                                                                                    }
+                                                                                                })
+                                                                                                .collect_view()
+                                                                                            }
+                                                                                        </Stack>
+                                                                                    </Show>
+
+                                                                                    <Inline justify=Justify::Between stack_mobile=true>
+                                                                                        <Stack gap=Space::None>
+                                                                                            <PanelTitle>"Allowed Slack DMs"</PanelTitle>
+                                                                                            <FineText>"Only listed users can interact with Finelor in DM."</FineText>
+                                                                                        </Stack>
+                                                                                        <ActionButton
+                                                                                            kind=ButtonKind::Primary
+                                                                                            disabled=!slack_is_active_provider
+                                                                                            on_click=move |_| {
+                                                                                                if slack_is_active_provider {
+                                                                                                    slack_user_modal_open.set(true);
+                                                                                                }
+                                                                                            }
+                                                                                        >
+                                                                                            <Icon icon=LuPlus width="1rem" height="1rem" />
+                                                                                            "Add Slack user"
+                                                                                        </ActionButton>
+                                                                                    </Inline>
+
+                                                                                    <Show
+                                                                                        when=move || has_active_slack_users
+                                                                                        fallback=move || view! {
+                                                                                            <Inline surface=InlineSurface::Panel>
+                                                                                                <Stack gap=Space::None shrink=true>
+                                                                                                    <PanelTitle>"No Slack users yet"</PanelTitle>
+                                                                                                    <FineText>"Add a user to allow Finelor interactions in DM."</FineText>
+                                                                                                </Stack>
+                                                                                            </Inline>
+                                                                                        }
+                                                                                    >
+                                                                                        <Stack gap=Space::Sm>
+                                                                                            {move || active_slack_users
+                                                                                                .get()
+                                                                                                .into_iter()
+                                                                                                .map(|channel| {
+                                                                                                    let channel_for_remove = channel.clone();
+                                                                                                    let display_name = channel
+                                                                                                        .display_name
+                                                                                                        .clone()
+                                                                                                        .or_else(|| channel.slack_username.clone().map(|value| format!("@{value}")))
+                                                                                                        .unwrap_or_else(|| channel.channel_name.clone());
+                                                                                                    let subtitle = channel
+                                                                                                        .slack_username
+                                                                                                        .clone()
+                                                                                                        .map(|value| format!("@{value}"))
+                                                                                                        .unwrap_or_else(|| "Slack DM".to_string());
+                                                                                                    view! {
+                                                                                                        <Inline align=Align::Start justify=Justify::Between gap=Space::Md surface=InlineSurface::Panel>
+                                                                                                            <Inline gap=Space::Md shrink=true>
+                                                                                                                <Avatar>
+                                                                                                                    <Icon icon=LuUser width="1.1rem" height="1.1rem" />
                                                                                                                 </Avatar>
                                                                                                                 <Stack gap=Space::None shrink=true>
                                                                                                                     <Cluster gap=Space::Sm>
@@ -1028,7 +1271,9 @@ pub fn Settings() -> impl IntoView {
                                         close_label="Close add Slack channel dialog"
                                         on_close=move |_| {
                                             slack_add_modal_open.set(false);
-                                            slack_verified_channel.set(None);
+                                            slack_channel_candidates.set(Vec::new());
+                                            slack_selected_channel.set(None);
+                                            slack_channel_search_loading.set(false);
                                             slack_verify_error.set(None);
                                             slack_add_error.set(None);
                                         }
@@ -1037,7 +1282,9 @@ pub fn Settings() -> impl IntoView {
                                             label="Close add Slack channel dialog"
                                             on_click=move |_| {
                                                 slack_add_modal_open.set(false);
-                                                slack_verified_channel.set(None);
+                                                slack_channel_candidates.set(Vec::new());
+                                                slack_selected_channel.set(None);
+                                                slack_channel_search_loading.set(false);
                                                 slack_verify_error.set(None);
                                                 slack_add_error.set(None);
                                             }
@@ -1052,7 +1299,7 @@ pub fn Settings() -> impl IntoView {
                                                 </Avatar>
                                                 <div>
                                                     <PanelTitle>"Add Slack channel"</PanelTitle>
-                                                    <FineText>"Allow one Slack channel by name"</FineText>
+                                                    <FineText>"Allow one Slack channel"</FineText>
                                                 </div>
                                             </Inline>
                                         </ModalHeader>
@@ -1066,7 +1313,8 @@ pub fn Settings() -> impl IntoView {
                                                         if normalized != slack_channel_name_input.get_untracked() {
                                                             slack_channel_name_input.set(normalized);
                                                         }
-                                                        slack_verified_channel.set(None);
+                                                        slack_channel_candidates.set(Vec::new());
+                                                        slack_selected_channel.set(None);
                                                         slack_verify_error.set(None);
                                                         slack_add_error.set(None);
                                                     })
@@ -1074,30 +1322,71 @@ pub fn Settings() -> impl IntoView {
                                                     required=true
                                                 />
                                             </FormField>
-                                            <FineText>"Enter the Slack channel name, for example #accounting."</FineText>
-                                            <Show when=move || slack_verified_channel.get().is_some()>
-                                                {move || {
-                                                    slack_verified_channel
-                                                        .get()
-                                                        .map(|verified| {
-                                                            let kind = if verified.channel_type == "private" {
-                                                                "Private channel"
+                                            <Show
+                                                when=move || {
+                                                    slack_channel_search_loading.get()
+                                                        || !slack_channel_candidates.get().is_empty()
+                                                        || slack_selected_channel.get().is_some()
+                                                }
+                                            >
+                                                <Inline gap=Space::Sm align=Align::Start>
+                                                    <Show when=move || slack_channel_search_loading.get()>
+                                                        <span class="loading loading-spinner loading-sm"></span>
+                                                    </Show>
+                                                    <FineText>
+                                                        {move || {
+                                                            if slack_selected_channel.get().is_some() {
+                                                                "Channel selected. Click Add channel to allow it."
+                                                                    .to_string()
+                                                            } else if !slack_channel_candidates
+                                                                .get()
+                                                                .is_empty()
+                                                                && slack_channel_candidates
+                                                                    .get()
+                                                                    .iter()
+                                                                    .all(|candidate| candidate.already_connected)
+                                                            {
+                                                                "Matching channels are already connected."
+                                                                    .to_string()
+                                                            } else if !slack_channel_candidates.get().is_empty() {
+                                                                "Found channels. Click one to select.".to_string()
                                                             } else {
-                                                                "Public channel"
-                                                            };
+                                                                "Looking up channels...".to_string()
+                                                            }
+                                                        }}
+                                                    </FineText>
+                                                </Inline>
+                                            </Show>
+                                            <Show when=move || !slack_channel_candidates.get().is_empty()>
+                                                {move || {
+                                                    slack_channel_candidates
+                                                        .get()
+                                                        .into_iter()
+                                                        .map(|candidate| {
+                                                            let candidate_for_click = candidate.clone();
+                                                            let is_disabled = candidate.already_connected;
+                                                            let selected_channel_id = candidate.channel_id.clone();
                                                             view! {
-                                                                <Inline surface=InlineSurface::Panel>
-                                                                    <Stack gap=Space::None shrink=true>
-                                                                        <PanelTitle>{slack_channel_display_name(&verified.channel_name)}</PanelTitle>
-                                                                        <FineText>{kind}</FineText>
-                                                                        <Show when=move || verified.already_allowed>
-                                                                            <FineText>"This channel is already allowed. Adding again refreshes it."</FineText>
-                                                                        </Show>
-                                                                    </Stack>
-                                                                </Inline>
-                                                            }.into_any()
+                                                                <SelectableListRow
+                                                                    title=slack_channel_display_name(&candidate.channel_name)
+                                                                    subtitle=if candidate.channel_type == "private" { "Private channel".to_string() } else { "Public channel".to_string() }
+                                                                    note=if is_disabled { Some("Already connected".to_string()) } else { None }
+                                                                    disabled=is_disabled
+                                                                    selected=slack_selected_channel
+                                                                        .get()
+                                                                        .as_ref()
+                                                                        .map(|selected| selected.channel_id == selected_channel_id)
+                                                                        .unwrap_or(false)
+                                                                    on_click=move |_| {
+                                                                        if is_disabled {
+                                                                            return;
+                                                                        }
+                                                                        slack_selected_channel.set(Some(candidate_for_click.clone()));
+                                                                    }
+                                                                />
+                                                            }
                                                         })
-                                                        .unwrap_or_else(|| ().into_any())
+                                                        .collect_view()
                                                 }}
                                             </Show>
                                             <Show
@@ -1135,22 +1424,25 @@ pub fn Settings() -> impl IntoView {
                                         </Stack>
 
                                         <ModalActions>
-                                            <ActionButton on_click=move |_| slack_add_modal_open.set(false)>
+                                            <ActionButton on_click=move |_| {
+                                                slack_add_modal_open.set(false);
+                                                slack_channel_candidates.set(Vec::new());
+                                                slack_selected_channel.set(None);
+                                                slack_channel_search_loading.set(false);
+                                                slack_verify_error.set(None);
+                                                slack_add_error.set(None);
+                                            }>
                                                 "Cancel"
                                             </ActionButton>
                                             <Show
-                                                when=move || !slack_channel_name_input.get().trim().is_empty()
+                                                when=move || slack_selected_channel.get().is_some()
                                                 fallback=move || view! {
                                                     <Button
                                                         kind=ButtonKind::Primary
                                                         button_type=ButtonType::Button
                                                         disabled=true
                                                     >
-                                                        {if slack_verified_channel.get_untracked().is_some() {
-                                                            "Add channel"
-                                                        } else {
-                                                            "Find channel"
-                                                        }}
+                                                        "Add channel"
                                                     </Button>
                                                 }
                                             >
@@ -1158,21 +1450,214 @@ pub fn Settings() -> impl IntoView {
                                                     kind=ButtonKind::Primary
                                                     button_type=ButtonType::Button
                                                     on:click=move |_| {
-                                                        let channel_name = normalize_slack_channel_input(&slack_channel_name_input.get());
-                                                        if !channel_name.is_empty() {
-                                                            if slack_verified_channel.get_untracked().is_some() {
-                                                                add_slack_channel_action.dispatch(AddSlackAllowedChannel { channel_name });
-                                                            } else {
-                                                                verify_slack_channel_action.dispatch(VerifySlackAllowedChannel { channel_name });
-                                                            }
+                                                        if let Some(selected) = slack_selected_channel.get_untracked() {
+                                                            add_slack_channel_action.dispatch(AddSlackAllowedChannel {
+                                                                channel_id: selected.channel_id,
+                                                            });
                                                         }
                                                     }
                                                 >
-                                                    {move || if slack_verified_channel.get().is_some() {
-                                                        "Add channel"
-                                                    } else {
-                                                        "Find channel"
-                                                    }}
+                                                    "Add channel"
+                                                </Button>
+                                            </Show>
+                                        </ModalActions>
+                                    </Modal>
+                                </Show>
+
+                                <Show when=move || slack_user_modal_open.get()>
+                                    <Modal
+                                        close_label="Close add Slack user dialog"
+                                        on_close=move |_| {
+                                            slack_user_modal_open.set(false);
+                                            slack_user_candidates.set(Vec::new());
+                                            slack_selected_user.set(None);
+                                            slack_user_verify_error.set(None);
+                                            slack_user_add_error.set(None);
+                                        }
+                                    >
+                                        <ModalCloseButton
+                                            label="Close add Slack user dialog"
+                                            on_click=move |_| {
+                                                slack_user_modal_open.set(false);
+                                                slack_user_candidates.set(Vec::new());
+                                                slack_selected_user.set(None);
+                                                slack_user_search_loading.set(false);
+                                                slack_user_verify_error.set(None);
+                                                slack_user_add_error.set(None);
+                                            }
+                                        >
+                                            <Icon icon=LuX width="1.25rem" height="1.25rem" />
+                                        </ModalCloseButton>
+
+                                        <ModalHeader>
+                                            <Inline gap=Space::Md shrink=true>
+                                                <Avatar>
+                                                    <Icon icon=LuUser width="1.1rem" height="1.1rem" />
+                                                </Avatar>
+                                                <div>
+                                                    <PanelTitle>"Add Slack user"</PanelTitle>
+                                                    <FineText>"Allow one Slack user for direct messages"</FineText>
+                                                </div>
+                                            </Inline>
+                                        </ModalHeader>
+
+                                        <Stack top=Space::Md gap=Space::Md>
+                                            <FormField label="Slack user">
+                                                <TextInput
+                                                    value=slack_user_input
+                                                    on_input=Callback::new(move |value: String| {
+                                                        let normalized = normalize_slack_user_input(&value);
+                                                        if normalized != slack_user_input.get_untracked() {
+                                                            slack_user_input.set(normalized);
+                                                        }
+                                                        slack_user_candidates.set(Vec::new());
+                                                        slack_selected_user.set(None);
+                                                        slack_user_verify_error.set(None);
+                                                        slack_user_add_error.set(None);
+                                                    })
+                                                    placeholder="@anna"
+                                                    required=true
+                                                />
+                                            </FormField>
+                                            <Show
+                                                when=move || {
+                                                    slack_user_search_loading.get()
+                                                        || !slack_user_candidates.get().is_empty()
+                                                        || slack_selected_user.get().is_some()
+                                                }
+                                            >
+                                                <Inline gap=Space::Sm align=Align::Start>
+                                                    <Show when=move || slack_user_search_loading.get()>
+                                                        <span class="loading loading-spinner loading-sm"></span>
+                                                    </Show>
+                                                    <FineText>
+                                                        {move || {
+                                                            if slack_selected_user.get().is_some() {
+                                                                "User selected. Click Add user to allow direct messages."
+                                                                    .to_string()
+                                                            } else if !slack_user_candidates
+                                                                .get()
+                                                                .is_empty()
+                                                                && slack_user_candidates
+                                                                    .get()
+                                                                    .iter()
+                                                                    .all(|candidate| candidate.already_connected)
+                                                            {
+                                                                "Matching users are already connected."
+                                                                    .to_string()
+                                                            } else if !slack_user_candidates.get().is_empty() {
+                                                                "Found users. Click one to select.".to_string()
+                                                            } else {
+                                                                "Looking up users...".to_string()
+                                                            }
+                                                        }}
+                                                    </FineText>
+                                                </Inline>
+                                            </Show>
+                                            <Show when=move || !slack_user_candidates.get().is_empty()>
+                                                {move || {
+                                                    slack_user_candidates
+                                                        .get()
+                                                        .into_iter()
+                                                        .map(|candidate| {
+                                                            let candidate_for_click = candidate.clone();
+                                                            let is_disabled = candidate.already_connected;
+                                                            let selected_user_id = candidate.user_id.clone();
+                                                            view! {
+                                                                <SelectableListRow
+                                                                    title=candidate.display_name.clone()
+                                                                    subtitle=format!("@{}", candidate.username)
+                                                                    note=if is_disabled { Some("Already connected".to_string()) } else { None }
+                                                                    disabled=is_disabled
+                                                                    selected=slack_selected_user
+                                                                        .get()
+                                                                        .as_ref()
+                                                                        .map(|selected| selected.slack_user_id == selected_user_id)
+                                                                        .unwrap_or(false)
+                                                                    on_click=move |_| {
+                                                                        if is_disabled {
+                                                                            return;
+                                                                        }
+                                                                        slack_selected_user.set(Some(SlackUserVerification {
+                                                                            channel_id: String::new(),
+                                                                            slack_user_id: candidate_for_click.user_id.clone(),
+                                                                            slack_username: candidate_for_click.username.clone(),
+                                                                            display_name: candidate_for_click.display_name.clone(),
+                                                                            channel_type: "im".to_string(),
+                                                                            already_allowed: false,
+                                                                        }));
+                                                                    }
+                                                                />
+                                                            }
+                                                        })
+                                                        .collect_view()
+                                                }}
+                                            </Show>
+                                            <Show when=move || slack_user_verify_error.get().is_some()>
+                                                {move || {
+                                                    slack_user_verify_error.get().map(|message| {
+                                                        view! {
+                                                            <Banner
+                                                                title=message
+                                                                icon=LuCircleAlert
+                                                                tone=Tone::Error
+                                                                prominence=BannerProminence::Spacious
+                                                            />
+                                                        }.into_any()
+                                                    }).unwrap_or_else(|| ().into_any())
+                                                }}
+                                            </Show>
+                                            <Show when=move || slack_user_add_error.get().is_some()>
+                                                {move || {
+                                                    slack_user_add_error.get().map(|message| {
+                                                        view! {
+                                                            <Banner
+                                                                title=message
+                                                                icon=LuCircleAlert
+                                                                tone=Tone::Error
+                                                                prominence=BannerProminence::Spacious
+                                                            />
+                                                        }.into_any()
+                                                    }).unwrap_or_else(|| ().into_any())
+                                                }}
+                                            </Show>
+                                        </Stack>
+
+                                        <ModalActions>
+                                            <ActionButton on_click=move |_| {
+                                                slack_user_modal_open.set(false);
+                                                slack_user_candidates.set(Vec::new());
+                                                slack_selected_user.set(None);
+                                                slack_user_search_loading.set(false);
+                                                slack_user_verify_error.set(None);
+                                                slack_user_add_error.set(None);
+                                            }>
+                                                "Cancel"
+                                            </ActionButton>
+                                            <Show
+                                                when=move || slack_selected_user.get().is_some()
+                                                fallback=move || view! {
+                                                    <Button
+                                                        kind=ButtonKind::Primary
+                                                        button_type=ButtonType::Button
+                                                        disabled=true
+                                                    >
+                                                        "Add user"
+                                                    </Button>
+                                                }
+                                            >
+                                                <Button
+                                                    kind=ButtonKind::Primary
+                                                    button_type=ButtonType::Button
+                                                    on:click=move |_| {
+                                                        if let Some(selected) = slack_selected_user.get_untracked() {
+                                                            add_slack_user_action.dispatch(AddSlackAllowedUser {
+                                                                user_id: selected.slack_user_id,
+                                                            });
+                                                        }
+                                                    }
+                                                >
+                                                    "Add user"
                                                 </Button>
                                             </Show>
                                         </ModalActions>
@@ -1184,7 +1669,41 @@ pub fn Settings() -> impl IntoView {
                                         slack_pending_delete
                                             .get()
                                             .map(|channel| {
-                                                let display_name = slack_channel_display_name(&channel.channel_name);
+                                                let is_dm = channel.channel_type == "im";
+                                                let display_name = if is_dm {
+                                                    channel
+                                                        .display_name
+                                                        .clone()
+                                                        .or_else(|| {
+                                                            channel
+                                                                .slack_username
+                                                                .clone()
+                                                                .map(|value| format!("@{value}"))
+                                                        })
+                                                        .unwrap_or_else(|| channel.channel_name.clone())
+                                                } else {
+                                                    slack_channel_display_name(&channel.channel_name)
+                                                };
+                                                let header = if is_dm {
+                                                    "Remove Slack user"
+                                                } else {
+                                                    "Remove Slack channel"
+                                                };
+                                                let title = if is_dm {
+                                                    "Remove this user?"
+                                                } else {
+                                                    "Remove this channel?"
+                                                };
+                                                let body = if is_dm {
+                                                    "Finelor will stop accepting direct Slack messages from this user."
+                                                } else {
+                                                    "Finelor will stop accepting Slack messages from this channel."
+                                                };
+                                                let error_prefix = if is_dm {
+                                                    "Could not remove Slack user"
+                                                } else {
+                                                    "Could not remove Slack channel"
+                                                };
                                                 view! {
                                                     <Modal
                                                         close_label="Cancel removing Slack channel"
@@ -1203,14 +1722,14 @@ pub fn Settings() -> impl IntoView {
                                                                     <Icon icon=LuTrash2 width="1.1rem" height="1.1rem" />
                                                                 </Avatar>
                                                                 <div>
-                                                                    <PanelTitle>"Remove Slack channel"</PanelTitle>
+                                                                    <PanelTitle>{header}</PanelTitle>
                                                                     <FineText>{display_name}</FineText>
                                                                 </div>
                                                             </Inline>
                                                         </ModalHeader>
 
-                                                        <ModalTitle>"Remove this channel?"</ModalTitle>
-                                                        <BodyText>"Finelor will stop accepting Slack messages from this channel."</BodyText>
+                                                        <ModalTitle>{title}</ModalTitle>
+                                                        <BodyText>{body}</BodyText>
 
                                                         <Show
                                                             when=move || remove_slack_channel_value.get().as_ref().and_then(|result| result.as_ref().err()).is_some()
@@ -1221,7 +1740,7 @@ pub fn Settings() -> impl IntoView {
                                                                         .get()
                                                                         .as_ref()
                                                                         .and_then(|result| result.as_ref().err())
-                                                                        .map(|err| format!("Could not remove Slack channel: {}", err))
+                                                                        .map(|err| format!("{}: {}", error_prefix, err))
                                                                         .unwrap_or_default()
                                                                 }}
                                                             </Alert>

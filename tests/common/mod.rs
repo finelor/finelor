@@ -152,7 +152,6 @@ pub fn test_config() -> finelor::config::AppConfig {
             slack: finelor::config::SlackConfig {
                 bot_token: String::new(),
                 app_token: String::new(),
-                allowed_channel_ids: Vec::new(),
             },
         },
         upload: finelor::config::UploadConfig { storage_path },

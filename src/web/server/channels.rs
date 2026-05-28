@@ -3,6 +3,8 @@ use crate::db::DbPool;
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "ssr")]
+use std::collections::HashSet;
+#[cfg(feature = "ssr")]
 use tower_sessions::Session;
 #[cfg(feature = "ssr")]
 use uuid::Uuid;
@@ -40,6 +42,9 @@ pub struct SlackAllowedChannel {
     pub channel_id: String,
     pub channel_name: String,
     pub channel_type: String,
+    pub slack_user_id: Option<String>,
+    pub slack_username: Option<String>,
+    pub display_name: Option<String>,
     pub active: bool,
 }
 
@@ -49,6 +54,32 @@ pub struct SlackChannelVerification {
     pub channel_name: String,
     pub channel_type: String,
     pub already_allowed: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct SlackUserVerification {
+    pub channel_id: String,
+    pub slack_user_id: String,
+    pub slack_username: String,
+    pub display_name: String,
+    pub channel_type: String,
+    pub already_allowed: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct SlackUserCandidate {
+    pub user_id: String,
+    pub username: String,
+    pub display_name: String,
+    pub already_connected: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct SlackChannelCandidate {
+    pub channel_id: String,
+    pub channel_name: String,
+    pub channel_type: String,
+    pub already_connected: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -308,9 +339,18 @@ pub async fn list_slack_allowed_channels() -> Result<Vec<SlackAllowedChannel>, S
         .map_err(|e| ServerFnError::new(format!("extract session: {}", e)))?;
     require_session_workspace_id(&session).await?;
 
-    let rows = sqlx::query_as::<_, (i64, String, String, String, bool)>(
+    let rows = sqlx::query_as::<_, (
+        i64,
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        bool,
+    )>(
         r#"
-        SELECT id, channel_id, channel_name, channel_type, active
+        SELECT id, channel_id, channel_name, channel_type, slack_user_id, slack_username, display_name, active
         FROM slack_allowed_channels
         WHERE active = TRUE
         ORDER BY created_at DESC
@@ -323,11 +363,23 @@ pub async fn list_slack_allowed_channels() -> Result<Vec<SlackAllowedChannel>, S
     Ok(rows
         .into_iter()
         .map(
-            |(id, channel_id, channel_name, channel_type, active)| SlackAllowedChannel {
+            |(
                 id,
                 channel_id,
                 channel_name,
                 channel_type,
+                slack_user_id,
+                slack_username,
+                display_name,
+                active,
+            )| SlackAllowedChannel {
+                id,
+                channel_id,
+                channel_name,
+                channel_type,
+                slack_user_id,
+                slack_username,
+                display_name,
                 active,
             },
         )
@@ -336,7 +388,7 @@ pub async fn list_slack_allowed_channels() -> Result<Vec<SlackAllowedChannel>, S
 
 #[server(AddSlackAllowedChannel, "/api")]
 pub async fn add_slack_allowed_channel(
-    channel_name: String,
+    channel_id: String,
 ) -> Result<SlackAllowedChannel, ServerFnError> {
     let pool = pool();
     let session: Session = leptos_axum::extract()
@@ -344,9 +396,9 @@ pub async fn add_slack_allowed_channel(
         .map_err(|e| ServerFnError::new(format!("extract session: {}", e)))?;
     require_session_workspace_id(&session).await?;
 
-    let normalized_name = channel_name.trim().trim_start_matches('#').to_string();
-    if normalized_name.is_empty() {
-        return Err(ServerFnError::new("Channel name is required."));
+    let normalized_channel_id = channel_id.trim().to_string();
+    if normalized_channel_id.is_empty() {
+        return Err(ServerFnError::new("Channel ID is required."));
     }
 
     let config =
@@ -357,24 +409,37 @@ pub async fn add_slack_allowed_channel(
     }
 
     let Some(resolved) =
-        crate::integrations::slack::resolve_channel_by_name(&bot_token, &normalized_name).await?
+        crate::integrations::slack::resolve_channel_by_id(&bot_token, &normalized_channel_id)
+            .await?
     else {
         return Err(ServerFnError::new(
             "Could not find that Slack channel, or the app does not have access to it.",
         ));
     };
 
-    let row = sqlx::query_as::<_, (i64, String, String, String, bool)>(
+    let row = sqlx::query_as::<_, (
+        i64,
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        bool,
+    )>(
         r#"
-        INSERT INTO slack_allowed_channels (channel_id, channel_name, channel_type, team_id, active)
-        VALUES ($1, $2, $3, $4, TRUE)
+        INSERT INTO slack_allowed_channels (channel_id, channel_name, channel_type, slack_user_id, slack_username, display_name, team_id, active)
+        VALUES ($1, $2, $3, NULL, NULL, NULL, $4, TRUE)
         ON CONFLICT(channel_id) DO UPDATE SET
           channel_name = excluded.channel_name,
           channel_type = excluded.channel_type,
+          slack_user_id = excluded.slack_user_id,
+          slack_username = excluded.slack_username,
+          display_name = excluded.display_name,
           team_id = excluded.team_id,
           active = TRUE,
           updated_at = CURRENT_TIMESTAMP
-        RETURNING id, channel_id, channel_name, channel_type, active
+        RETURNING id, channel_id, channel_name, channel_type, slack_user_id, slack_username, display_name, active
         "#,
     )
     .bind(&resolved.channel_id)
@@ -390,8 +455,61 @@ pub async fn add_slack_allowed_channel(
         channel_id: row.1,
         channel_name: row.2,
         channel_type: row.3,
-        active: row.4,
+        slack_user_id: row.4,
+        slack_username: row.5,
+        display_name: row.6,
+        active: row.7,
     })
+}
+
+#[server(SearchSlackChannels, "/api")]
+pub async fn search_slack_channels(
+    query: String,
+) -> Result<Vec<SlackChannelCandidate>, ServerFnError> {
+    let pool = pool();
+    let session: Session = leptos_axum::extract()
+        .await
+        .map_err(|e| ServerFnError::new(format!("extract session: {}", e)))?;
+    require_session_workspace_id(&session).await?;
+
+    let normalized_query = query.trim().to_string();
+    if normalized_query.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let config =
+        crate::config::load().map_err(|e| ServerFnError::new(format!("Config error: {}", e)))?;
+    let bot_token = config.messaging.slack.bot_token.trim().to_string();
+    if bot_token.is_empty() {
+        return Err(ServerFnError::new("Slack bot token is not configured."));
+    }
+
+    let channels =
+        crate::integrations::slack::search_channels(&bot_token, &normalized_query).await?;
+
+    let connected_channel_ids = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT channel_id
+        FROM slack_allowed_channels
+        WHERE active = TRUE
+          AND channel_type != 'im'
+        "#,
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| ServerFnError::new(format!("Database error: {}", e)))?
+    .into_iter()
+    .collect::<HashSet<String>>();
+
+    Ok(channels
+        .into_iter()
+        .map(|candidate| SlackChannelCandidate {
+            already_connected: connected_channel_ids.contains(&candidate.channel_id),
+            channel_id: candidate.channel_id,
+            channel_name: candidate.channel_name,
+            channel_type: candidate.channel_type,
+        })
+        .collect())
 }
 
 #[server(VerifySlackAllowedChannel, "/api")]
@@ -467,6 +585,177 @@ pub async fn remove_slack_allowed_channel(channel_id: String) -> Result<(), Serv
         return Err(ServerFnError::new("Slack channel not found."));
     }
     Ok(())
+}
+
+#[server(VerifySlackAllowedUser, "/api")]
+pub async fn verify_slack_allowed_user(
+    username: String,
+) -> Result<SlackUserVerification, ServerFnError> {
+    let pool = pool();
+    let session: Session = leptos_axum::extract()
+        .await
+        .map_err(|e| ServerFnError::new(format!("extract session: {}", e)))?;
+    require_session_workspace_id(&session).await?;
+
+    let normalized_username = username.trim().trim_start_matches('@').to_string();
+    if normalized_username.is_empty() {
+        return Err(ServerFnError::new("Username is required."));
+    }
+
+    let config =
+        crate::config::load().map_err(|e| ServerFnError::new(format!("Config error: {}", e)))?;
+    let bot_token = config.messaging.slack.bot_token.trim().to_string();
+    if bot_token.is_empty() {
+        return Err(ServerFnError::new("Slack bot token is not configured."));
+    }
+
+    let Some(resolved) =
+        crate::integrations::slack::resolve_user_by_username(&bot_token, &normalized_username)
+            .await?
+    else {
+        return Err(ServerFnError::new(
+            "Could not find that Slack user, or the app does not have access to it.",
+        ));
+    };
+
+    let already_allowed = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(1) FROM slack_allowed_channels WHERE channel_id = $1 AND active = TRUE",
+    )
+    .bind(&resolved.dm_channel_id)
+    .fetch_one(&pool)
+    .await
+    .map_err(|e| ServerFnError::new(format!("Database error: {}", e)))?
+        > 0;
+
+    Ok(SlackUserVerification {
+        channel_id: resolved.dm_channel_id,
+        slack_user_id: resolved.user_id,
+        slack_username: resolved.username,
+        display_name: resolved.display_name,
+        channel_type: "im".to_string(),
+        already_allowed,
+    })
+}
+
+#[server(AddSlackAllowedUser, "/api")]
+pub async fn add_slack_allowed_user(user_id: String) -> Result<SlackAllowedChannel, ServerFnError> {
+    let pool = pool();
+    let session: Session = leptos_axum::extract()
+        .await
+        .map_err(|e| ServerFnError::new(format!("extract session: {}", e)))?;
+    require_session_workspace_id(&session).await?;
+
+    let normalized_user_id = user_id.trim().to_string();
+    if normalized_user_id.is_empty() {
+        return Err(ServerFnError::new("Slack user is required."));
+    }
+
+    let config =
+        crate::config::load().map_err(|e| ServerFnError::new(format!("Config error: {}", e)))?;
+    let bot_token = config.messaging.slack.bot_token.trim().to_string();
+    if bot_token.is_empty() {
+        return Err(ServerFnError::new("Slack bot token is not configured."));
+    }
+
+    let Some(resolved) =
+        crate::integrations::slack::resolve_user_by_id(&bot_token, &normalized_user_id).await?
+    else {
+        return Err(ServerFnError::new(
+            "Could not find that Slack user, or the app does not have access to it.",
+        ));
+    };
+
+    let row = sqlx::query_as::<_, (
+        i64,
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        bool,
+    )>(
+        r#"
+        INSERT INTO slack_allowed_channels (channel_id, channel_name, channel_type, slack_user_id, slack_username, display_name, team_id, active)
+        VALUES ($1, $2, 'im', $3, $4, $5, NULL, TRUE)
+        ON CONFLICT(channel_id) DO UPDATE SET
+          channel_name = excluded.channel_name,
+          channel_type = excluded.channel_type,
+          slack_user_id = excluded.slack_user_id,
+          slack_username = excluded.slack_username,
+          display_name = excluded.display_name,
+          active = TRUE,
+          updated_at = CURRENT_TIMESTAMP
+        RETURNING id, channel_id, channel_name, channel_type, slack_user_id, slack_username, display_name, active
+        "#,
+    )
+    .bind(&resolved.dm_channel_id)
+    .bind(format!("@{}", resolved.username))
+    .bind(&resolved.user_id)
+    .bind(&resolved.username)
+    .bind(&resolved.display_name)
+    .fetch_one(&pool)
+    .await
+    .map_err(|e| ServerFnError::new(format!("Database error: {}", e)))?;
+
+    Ok(SlackAllowedChannel {
+        id: row.0,
+        channel_id: row.1,
+        channel_name: row.2,
+        channel_type: row.3,
+        slack_user_id: row.4,
+        slack_username: row.5,
+        display_name: row.6,
+        active: row.7,
+    })
+}
+
+#[server(SearchSlackUsers, "/api")]
+pub async fn search_slack_users(query: String) -> Result<Vec<SlackUserCandidate>, ServerFnError> {
+    let pool = pool();
+    let session: Session = leptos_axum::extract()
+        .await
+        .map_err(|e| ServerFnError::new(format!("extract session: {}", e)))?;
+    require_session_workspace_id(&session).await?;
+
+    let normalized_query = query.trim().to_string();
+    if normalized_query.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let config =
+        crate::config::load().map_err(|e| ServerFnError::new(format!("Config error: {}", e)))?;
+    let bot_token = config.messaging.slack.bot_token.trim().to_string();
+    if bot_token.is_empty() {
+        return Err(ServerFnError::new("Slack bot token is not configured."));
+    }
+
+    let users = crate::integrations::slack::search_users(&bot_token, &normalized_query).await?;
+
+    let connected_user_ids = sqlx::query_scalar::<_, Option<String>>(
+        r#"
+        SELECT slack_user_id
+        FROM slack_allowed_channels
+        WHERE active = TRUE
+          AND slack_user_id IS NOT NULL
+        "#,
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| ServerFnError::new(format!("Database error: {}", e)))?
+    .into_iter()
+    .flatten()
+    .collect::<HashSet<String>>();
+
+    Ok(users
+        .into_iter()
+        .map(|candidate| SlackUserCandidate {
+            already_connected: connected_user_ids.contains(&candidate.user_id),
+            user_id: candidate.user_id,
+            username: candidate.username,
+            display_name: candidate.display_name,
+        })
+        .collect())
 }
 
 #[server(GetTelegramChannelAvatar, "/api")]

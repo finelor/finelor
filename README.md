@@ -17,8 +17,9 @@ We are building and sharing openly the foundational infrastructure for autonomou
 - approval workflows
 - export to accounting systems
 - human-in-the-loop clarifications
-- intelligent conversational support
-- And many more coming soon
+- intelligent conversational support through Telegram and Slack
+- web-based control panel app
+- and many more coming soon
 
 ## Install & Run
 

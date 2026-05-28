@@ -125,8 +125,6 @@ pub struct TelegramConfig {
 pub struct SlackConfig {
     pub bot_token: String,
     pub app_token: String,
-    #[serde(default)]
-    pub allowed_channel_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
