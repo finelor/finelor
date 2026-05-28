@@ -152,7 +152,7 @@ async fn handle_slack_command(
             "channel_type": "channel",
         }),
     );
-    if !slack_channel_allowed(&state, &source.channel_identifier) {
+    if !slack_channel_allowed(&state, &source.channel_identifier).await {
         return Ok(SlackCommandEventResponse {
             content: SlackMessageContent::new()
                 .with_text("Finelor is not enabled for this Slack channel.".to_string()),
@@ -293,7 +293,7 @@ async fn handle_slack_push_event(event: SlackPushEventCallback, state: AgentGate
 }
 
 async fn handle_slack_text(source: MessageSource, text: String, state: AgentGatewayState) {
-    if !slack_channel_allowed(&state, &source.channel_identifier) {
+    if !slack_channel_allowed(&state, &source.channel_identifier).await {
         return;
     }
     ensure_slack_channel_identity(&state, &source).await;
@@ -332,7 +332,7 @@ async fn handle_slack_text(source: MessageSource, text: String, state: AgentGate
 }
 
 async fn handle_slack_file(source: MessageSource, file: &SlackFile, state: AgentGatewayState) {
-    if !slack_channel_allowed(&state, &source.channel_identifier) {
+    if !slack_channel_allowed(&state, &source.channel_identifier).await {
         return;
     }
     ensure_slack_channel_identity(&state, &source).await;
@@ -445,7 +445,7 @@ async fn handle_slack_interaction(event: SlackInteractionEvent, state: AgentGate
         message_ts,
         json!({"entrypoint": "block_action"}),
     );
-    if !slack_channel_allowed(&state, &source.channel_identifier) {
+    if !slack_channel_allowed(&state, &source.channel_identifier).await {
         return;
     }
     ensure_slack_channel_identity(&state, &source).await;
@@ -508,15 +508,38 @@ fn slack_source(
     }
 }
 
-fn slack_channel_allowed(state: &AgentGatewayState, channel_id: &str) -> bool {
-    state.config.messaging.slack.allowed_channel_ids.is_empty()
-        || state
-            .config
-            .messaging
-            .slack
-            .allowed_channel_ids
-            .iter()
-            .any(|allowed| allowed == channel_id)
+async fn slack_channel_allowed(state: &AgentGatewayState, channel_id: &str) -> bool {
+    let db_allowed = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM slack_allowed_channels WHERE active = TRUE",
+    )
+    .fetch_one(&state.pool)
+    .await;
+
+    match db_allowed {
+        Ok(count) if count > 0 => {
+            match sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM slack_allowed_channels WHERE active = TRUE AND channel_id = $1",
+            )
+            .bind(channel_id)
+            .fetch_one(&state.pool)
+            .await
+            {
+                Ok(match_count) => match_count > 0,
+                Err(_) => false,
+            }
+        }
+        Ok(_) => {
+            state.config.messaging.slack.allowed_channel_ids.is_empty()
+                || state
+                    .config
+                    .messaging
+                    .slack
+                    .allowed_channel_ids
+                    .iter()
+                    .any(|allowed| allowed == channel_id)
+        }
+        Err(_) => false,
+    }
 }
 
 async fn ensure_slack_channel_identity(state: &AgentGatewayState, source: &MessageSource) {
