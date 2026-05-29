@@ -30,9 +30,14 @@ web:
   allowed_hosts: "${WEB_ALLOWED_HOSTS}"
   allowed_origins: "${WEB_ALLOWED_ORIGINS}"
 
-telegram:
-  bot_token: "${TELEGRAM_BOT_TOKEN}"
-  webhook_url: null
+messaging:
+  provider: "${MESSAGING_PROVIDER}"
+  telegram:
+    bot_token: "${MESSAGING_TELEGRAM_BOT_TOKEN:-}"
+    webhook_url: null
+  slack:
+    bot_token: "${MESSAGING_SLACK_BOT_TOKEN:-}"
+    app_token: "${MESSAGING_SLACK_APP_TOKEN:-}"
 
 upload:
   storage_path: "${UPLOAD_STORAGE_PATH}"

@@ -81,6 +81,43 @@ pub fn PlainListItem(children: Children) -> impl IntoView {
 }
 
 #[component]
+pub fn SelectableListRow(
+    title: String,
+    subtitle: String,
+    #[prop(default = None)] note: Option<String>,
+    #[prop(default = false)] selected: bool,
+    #[prop(default = false)] disabled: bool,
+    on_click: impl Fn(leptos::ev::MouseEvent) + 'static,
+) -> impl IntoView {
+    let note_text = note.unwrap_or_default();
+    let note_text_when = note_text.clone();
+    let class = if disabled {
+        "w-full rounded-lg border border-base-300 bg-base-100 p-3 text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 opacity-70 cursor-not-allowed"
+    } else {
+        "w-full rounded-lg border border-base-300 bg-base-100 p-3 text-left transition hover:border-primary/35 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 cursor-pointer"
+    };
+
+    view! {
+        <button
+            type="button"
+            class=class
+            disabled=disabled
+            class:border-primary=selected
+            class:border-2=selected
+            on:click=on_click
+        >
+            <div class="space-y-0.5">
+                <p class="text-sm font-semibold text-base-content">{title}</p>
+                <p class="text-sm text-base-content/70">{subtitle}</p>
+                <Show when=move || !note_text_when.is_empty()>
+                    <p class="text-xs text-base-content/60">{note_text.clone()}</p>
+                </Show>
+            </div>
+        </button>
+    }
+}
+
+#[component]
 pub fn DashboardPreviewRow(
     href: String,
     title: String,

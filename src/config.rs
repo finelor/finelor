@@ -14,7 +14,7 @@ pub struct AppConfig {
     pub session: SessionConfig,
     pub worker: WorkerConfig,
     pub web: WebConfig,
-    pub telegram: TelegramConfig,
+    pub messaging: MessagingConfig,
     pub upload: UploadConfig,
     pub export: ExportConfig,
     pub logging: LoggingConfig,
@@ -92,9 +92,48 @@ pub struct WebConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct MessagingConfig {
+    pub provider: MessagingProvider,
+    pub telegram: TelegramConfig,
+    pub slack: SlackConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MessagingProvider {
+    Telegram,
+    Slack,
+    None,
+}
+
+impl MessagingProvider {
+    pub const fn channel_type(self) -> Option<crate::db::ChannelType> {
+        match self {
+            Self::Telegram => Some(crate::db::ChannelType::Telegram),
+            Self::Slack => Some(crate::db::ChannelType::Slack),
+            Self::None => None,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Telegram => "telegram",
+            Self::Slack => "slack",
+            Self::None => "none",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct TelegramConfig {
     pub bot_token: String,
     pub webhook_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SlackConfig {
+    pub bot_token: String,
+    pub app_token: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -136,8 +175,34 @@ pub fn load() -> AppResult<AppConfig> {
     let config: AppConfig = serde_json::from_value(expanded)
         .map_err(|e| crate::error::AppError::Config(config::ConfigError::Message(e.to_string())))?;
     config.database.validate()?;
+    config.validate_messaging()?;
 
     Ok(config)
+}
+
+impl AppConfig {
+    fn validate_messaging(&self) -> AppResult<()> {
+        match self.messaging.provider {
+            MessagingProvider::Telegram if self.messaging.telegram.bot_token.trim().is_empty() => {
+                Err(config_error(
+                    "messaging.telegram.bot_token is required when messaging.provider is telegram",
+                ))
+            }
+            MessagingProvider::Slack
+                if self.messaging.slack.bot_token.trim().is_empty()
+                    || self.messaging.slack.app_token.trim().is_empty() =>
+            {
+                Err(config_error(
+                    "messaging.slack.bot_token and messaging.slack.app_token are required when messaging.provider is slack",
+                ))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+fn config_error(message: impl Into<String>) -> crate::error::AppError {
+    crate::error::AppError::Config(config::ConfigError::Message(message.into()))
 }
 
 fn expand_env_placeholders_in_value(value: &mut JsonValue) -> AppResult<()> {
@@ -171,9 +236,14 @@ fn expand_env_placeholders(input: &str) -> AppResult<String> {
         let remainder = &cursor[start + 2..];
 
         if let Some(end) = remainder.find('}') {
-            let key = &remainder[..end];
+            let expression = &remainder[..end];
+            let (key, default) = expression
+                .split_once(":-")
+                .map_or((expression, None), |(key, default)| (key, Some(default)));
             if let Ok(value) = env::var(key) {
                 output.push_str(&value);
+            } else if let Some(default) = default {
+                output.push_str(default);
             } else {
                 return Err(crate::error::AppError::Config(
                     config::ConfigError::Message(format!(
@@ -232,6 +302,15 @@ mod tests {
     }
 
     #[test]
+    fn messaging_env_names_are_read_from_base_config() {
+        let raw = fs::read_to_string("config.yaml").expect("config.yaml");
+        assert!(raw.contains("provider: \"${MESSAGING_PROVIDER}\""));
+        assert!(raw.contains("bot_token: \"${MESSAGING_TELEGRAM_BOT_TOKEN:-}\""));
+        assert!(raw.contains("bot_token: \"${MESSAGING_SLACK_BOT_TOKEN:-}\""));
+        assert!(raw.contains("app_token: \"${MESSAGING_SLACK_APP_TOKEN:-}\""));
+    }
+
+    #[test]
     fn assistant_soul_prompt_path_exists_in_base_config() {
         let raw = fs::read_to_string("config.yaml").expect("config.yaml");
         assert!(raw.contains("assistant_soul_prompt_path:"));
@@ -274,6 +353,13 @@ mod tests {
             err.to_string().contains("FINELOR_TEST_MISSING_ENV"),
             "error should name the missing env var: {err}"
         );
+    }
+
+    #[test]
+    fn placeholder_default_allows_missing_optional_env() {
+        let value = expand_env_placeholders("token=${FINELOR_TEST_OPTIONAL_ENV:-}")
+            .expect("optional placeholder should expand");
+        assert_eq!(value, "token=");
     }
 
     #[test]

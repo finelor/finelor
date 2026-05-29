@@ -23,7 +23,7 @@ fn workspace_baseline_migration_contains_workspace_only_contracts() {
 
 #[test]
 fn api_key_migration_contains_public_api_key_contracts() {
-    let migration = include_str!("../migrations/002_api_keys.sql");
+    let migration = include_str!("../migrations/003_api_keys.sql");
 
     assert!(migration.contains("CREATE TABLE IF NOT EXISTS api_keys"));
     assert!(migration.contains("token TEXT NOT NULL UNIQUE"));
@@ -35,7 +35,7 @@ fn api_key_migration_contains_public_api_key_contracts() {
 
 #[test]
 fn mcp_key_migration_contains_mcp_key_contracts() {
-    let migration = include_str!("../migrations/003_mcp_keys.sql");
+    let migration = include_str!("../migrations/004_mcp_keys.sql");
 
     assert!(migration.contains("CREATE TABLE IF NOT EXISTS mcp_keys"));
     assert!(migration.contains("token TEXT NOT NULL UNIQUE"));

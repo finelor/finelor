@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use crate::db;
 use crate::ingestion::{self, SavedDocumentRef};
+use crate::integrations::telegram::{TelegramNotifier, escape_markdown};
 use crate::messaging::contracts::{
     ActionButton, AgentInboundMessage, GatewayAttachment, GatewayMessageFormat, MessageSource,
 };
@@ -19,7 +20,6 @@ use crate::messaging::dispatch::OutboundChannelAdapter;
 use crate::messaging::gateway::{AgentGatewayState, encode_document_action, parse_document_action};
 use crate::messaging::intents::slash_command_menu;
 use crate::messaging::interventions::InterventionTarget;
-use crate::telegram::escape_markdown;
 use crate::web::events::{
     AppEvent, TelegramConnectStatusKind, get_telegram_connect_session,
     update_telegram_connect_session_status,
@@ -372,7 +372,7 @@ async fn handle_text_command(
             );
 
             let metadata = build_telegram_connect_metadata(&msg, session.user_id);
-            match crate::web::server::auth::connect_telegram_for_workspace_with_metadata(
+            match crate::web::server::channels::connect_telegram_for_workspace_with_metadata(
                 &state.pool,
                 session.workspace_id,
                 chat_id.0,
@@ -507,7 +507,7 @@ pub async fn handle_telegram_callback_query(
         }),
     };
 
-    let notifier = crate::telegram::TelegramNotifier::new(state.config.telegram.bot_token.clone());
+    let notifier = TelegramNotifier::new(state.config.messaging.telegram.bot_token.clone());
     let response = match state.handle_document_action(&source, action).await {
         Ok(result) => result,
         Err(err) => {

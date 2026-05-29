@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::db::DbPool;
+use crate::db::{ChannelType, DbPool};
 use anyhow::anyhow;
 use chrono::NaiveDate;
 use serde_json::json;
@@ -683,21 +683,30 @@ async fn resolve_export_user_id(pool: &DbPool, source: &MessageSource) -> anyhow
     .fetch_optional(pool)
     .await?;
 
-    let metadata: serde_json::Value = row
+    let metadata: Option<serde_json::Value> = row
         .and_then(|r| r.try_get::<Option<serde_json::Value>, _>("metadata").ok())
-        .flatten()
-        .ok_or_else(|| anyhow!("Telegram channel is connected without owner metadata. Reconnect it from Settings > Channels while logged in as admin, then try /export again."))?;
+        .flatten();
 
-    let connected_by = metadata
-        .get("connected_by_user_id")
-        .and_then(|v| v.as_str().map(ToOwned::to_owned).or_else(|| v.as_i64().map(|n| n.to_string())))
-        .ok_or_else(|| anyhow!("Telegram channel owner is missing from metadata. Reconnect the channel from Settings > Channels as admin, then try /export again."))?;
-
-    let connected_by_user_id = connected_by.parse::<i64>().map_err(|_| {
-        anyhow!(
-            "Telegram channel owner metadata is invalid. Reconnect the channel from Settings > Channels as admin, then try /export again."
-        )
-    })?;
+    let connected_by_user_id = match metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("connected_by_user_id"))
+        .and_then(|v| {
+            v.as_str()
+                .map(ToOwned::to_owned)
+                .or_else(|| v.as_i64().map(|n| n.to_string()))
+        }) {
+        Some(connected_by) => connected_by.parse::<i64>().map_err(|_| {
+            anyhow!(
+                "Connected channel owner metadata is invalid. Reconnect the channel from Settings > Channels as admin, then try /export again."
+            )
+        })?,
+        None if source.channel == ChannelType::Slack => fallback_export_user_id(pool).await?,
+        None => {
+            return Err(anyhow!(
+                "Connected channel owner is missing from metadata. Reconnect the channel from Settings > Channels as admin, then try /export again."
+            ));
+        }
+    };
 
     let user_exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)")
         .bind(connected_by_user_id)
@@ -706,11 +715,29 @@ async fn resolve_export_user_id(pool: &DbPool, source: &MessageSource) -> anyhow
 
     if !user_exists {
         return Err(anyhow!(
-            "Telegram channel owner no longer exists. Reconnect the channel from Settings > Channels while logged in as admin, then try /export again."
+            "Connected channel owner no longer exists. Reconnect the channel from Settings > Channels while logged in as admin, then try /export again."
         ));
     }
 
     Ok(connected_by_user_id)
+}
+
+async fn fallback_export_user_id(pool: &DbPool) -> anyhow::Result<i64> {
+    sqlx::query_scalar(
+        r#"
+        SELECT id
+        FROM users
+        ORDER BY CASE WHEN role = 'admin' THEN 0 ELSE 1 END, id ASC
+        LIMIT 1
+        "#,
+    )
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| {
+        anyhow!(
+            "No user exists to attribute the export. Create an admin user, then try /export again."
+        )
+    })
 }
 
 async fn determine_review_eligibility(

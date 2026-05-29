@@ -155,9 +155,16 @@ pub fn test_config() -> finelor::config::AppConfig {
                 "http://127.0.0.1:3000".to_string(),
             ],
         },
-        telegram: finelor::config::TelegramConfig {
-            bot_token: "test-token".to_string(),
-            webhook_url: None,
+        messaging: finelor::config::MessagingConfig {
+            provider: finelor::config::MessagingProvider::Telegram,
+            telegram: finelor::config::TelegramConfig {
+                bot_token: "test-token".to_string(),
+                webhook_url: None,
+            },
+            slack: finelor::config::SlackConfig {
+                bot_token: String::new(),
+                app_token: String::new(),
+            },
         },
         upload: finelor::config::UploadConfig { storage_path },
         export: finelor::config::ExportConfig {

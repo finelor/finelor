@@ -17,10 +17,9 @@ We are building and sharing openly the foundational infrastructure for autonomou
 - approval workflows
 - export to accounting systems
 - human-in-the-loop clarifications
-- API and MCP for agent communication
 - intelligent conversational support through Telegram and Slack
-- Web control panel app
-- And many more coming soon
+- web-based control panel app
+- and many more coming soon
 
 ## Install & Run
 
@@ -36,22 +35,43 @@ We are building and sharing openly the foundational infrastructure for autonomou
     ```bash
     cp .env.example .env
     ```
-2. Add your Ollama API key (get your free account on [`Ollama website`](https://ollama.com/)).
 
-3. Add your Telegram bot token (See Telegram Setup).
+2. Add your Ollama API key to `.env` (get your free account on [`Ollama website`](https://ollama.com/)).
+
+3. Choose one messaging provider (`telegram` or `slack`) in `.env`.
+
+4. Add the matching provider credentials. See Telegram Setup or Slack Setup.
 
 ### Telegram Setup
 
-#### Step 1: 
-
-Create a telegram bot via BotFather
+Create a Telegram bot via BotFather.
 
 1. In Telegram search for **@BotFather**, or in your browser visit [`t.me/BotFather`](t.me/BotFather)
-2. In **@BotFather** chat click `Open` or send `/newbot`
-2. Give your bot a display name (e.g., "Finelor").
-3. Choose a username that ends in `bot`. It must be unique (e.g., `my_finelor_bot`)
-4. BotFather gives you API token.
-5. Copy your bot's API token add add it to .env (e.g. `TELEGRAM_BOT_TOKEN=8840841306:AAGVcS0KyQZsDFIOSIDFNAdsfaD9o`)
+2. In **@BotFather** chat click `Open` or send `/newbot`.
+3. Give your bot a display name (e.g., "Finelor").
+4. Choose a username that ends in `bot`. It must be unique (e.g., `my_finelor_bot`).
+5. BotFather gives you an API token.
+6. Set `MESSAGING_PROVIDER` to `telegram`.
+7. Add the bot token to `MESSAGING_TELEGRAM_BOT_TOKEN` in `.env`.
+
+### Slack Setup
+
+Create a Slack app via the Slack app manifest.
+
+1. Open [Slack apps](https://api.slack.com/apps).
+2. Click `Create New App`.
+3. Choose `From an app manifest`.
+4. Select your Slack workspace.
+5. Copy the contents of [`docs/slack-app-manifest.yaml`](docs/slack-app-manifest.yaml) into the **YAML** tab in Slack. See Slack's [app manifest docs](https://docs.slack.dev/app-manifests) for details.
+6. Click through Slack's review steps and create the app.
+7. In the app settings, open **OAuth & Permissions** and click `Install to <YOUR WORKSPACE NAME>`.
+8. Click `Allow` on the opened authorization page.
+9. Copy the **Bot User OAuth Token**. It starts with `xoxb-`.
+10. Open **Basic Information > App-Level Tokens** and generate a token with the [`connections:write`](https://docs.slack.dev/reference/scopes/connections.write/) scope. It starts with `xapp-`.
+11. Confirm [Socket Mode](https://api.slack.com/apis/connections/socket) is enabled for the app in **App Settings > Socket Mode**.
+12. Set `MESSAGING_PROVIDER` to `slack` in `.env`.
+13. Add the `xoxb-` token to `MESSAGING_SLACK_BOT_TOKEN` in `.env`.
+14. Add the `xapp-` token to `MESSAGING_SLACK_APP_TOKEN` in `.env`.
 
 ### Option A (Recommended): Run in Docker (everything in Docker)
 
@@ -97,7 +117,7 @@ make health
 make bootstrap-local
 ```
 
-2. Run app on host:
+1. Run app on host:
 
 ```bash
 make run
@@ -128,37 +148,10 @@ Notes:
 - `config.local.yaml` can be partial (only include keys you want to override).
 - `config.local.yaml` is for host/local runs and is not used in Docker by default.
 - for the same key, shell-exported env values override `.env` values.
- 
+
 ## Documentation
+
 Project documentation lives in [`docs/`](docs/).
-
-Finelor also exposes integration interfaces:
-
-- Public API endpoints are available for API-key authenticated document ingestion and document queries. See [`docs/api.md`](docs/api.md).
-- MCP server support is available for AI agents to query Finelor document information with MCP-key authentication. For setup details, examples, and troubleshooting, see [`docs/mcp.md`](docs/mcp.md).
-
-## MCP integrations
-
-Finelor exposes a read-only MCP server for external AI clients and agent runtimes.
-
-Endpoint:
-
-```text
-/mcp
-```
-
-Typical use cases:
-- ask an AI agent for the current Finelor document status
-- list recent documents and identify items that need review
-- explain why one document is blocked, pending, failed, or ready
-- retrieve document details by document reference and summarize accounting status
-
-Examples:
-
-- OpenClaw can be configured with a named remote MCP server using `transport: "streamable-http"` and an `Authorization: Bearer ...` header.
-- Hermes can be configured under `mcp_servers` in `~/.hermes/config.yaml` with the same endpoint and bearer token.
-
-See [`docs/mcp.md`](docs/mcp.md) for full setup instructions, working OpenClaw and Hermes examples, and example chats.
 
 ## Contribution
 
@@ -173,13 +166,13 @@ make check
 make docs-check
 ```
 
-4. For DB-backed integration checks:
+1. For DB-backed integration checks:
 
 ```bash
 make test-integration
 ```
 
-5. Open a pull request with a clear summary, test evidence, and any docs updates.
+1. Open a pull request with a clear summary, test evidence, and any docs updates.
 
 ## Community
 

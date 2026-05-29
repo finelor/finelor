@@ -41,7 +41,7 @@ use tracing_subscriber::EnvFilter;
 use finelor::web::pool::{set_ephemeral_store, set_pool};
 
 use finelor::agents::AgentContext;
-use finelor::config::{self, AppConfig};
+use finelor::config::{self, AppConfig, MessagingProvider};
 use finelor::db;
 use finelor::messaging::AgentGatewayState;
 use finelor::orchestration::{JobProcessor, recover_incomplete_jobs};
@@ -90,14 +90,33 @@ fn agent_gateway_state(state: &AppState) -> AgentGatewayState {
     }
 }
 
-fn spawn_gateway_event_dispatcher(bot: Bot, state: AppState) {
+fn spawn_gateway_event_dispatcher(state: AppState) {
     let gateway_state = agent_gateway_state(&state);
     tokio::spawn(async move {
-        let dispatcher = finelor::messaging::dispatch::GatewayEventDispatcher::new(gateway_state)
-            .with_adapter(
-                "TELEGRAM",
-                Arc::new(finelor::messaging::adapters::telegram::TelegramOutboundAdapter::new(bot)),
-            );
+        let mut dispatcher =
+            finelor::messaging::dispatch::GatewayEventDispatcher::new(gateway_state.clone());
+        match gateway_state.config.messaging.provider {
+            MessagingProvider::Telegram => {
+                let bot = Bot::new(gateway_state.config.messaging.telegram.bot_token.clone());
+                dispatcher = dispatcher.with_adapter(
+                    "TELEGRAM",
+                    Arc::new(
+                        finelor::messaging::adapters::telegram::TelegramOutboundAdapter::new(bot),
+                    ),
+                );
+            }
+            MessagingProvider::Slack => {
+                dispatcher = dispatcher.with_adapter(
+                    "SLACK",
+                    Arc::new(
+                        finelor::messaging::adapters::slack::SlackOutboundAdapter::new(
+                            gateway_state.config.messaging.slack.bot_token.clone(),
+                        ),
+                    ),
+                );
+            }
+            MessagingProvider::None => {}
+        }
 
         if let Err(err) = dispatcher.run().await {
             error!(error = %err, "Gateway event dispatcher stopped");
@@ -190,27 +209,40 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("failed to bind HTTP listener")?;
 
-    let bot_task = if should_disable_bot(config.telegram.bot_token.as_str()) {
-        warn!("Telegram bot disabled: placeholder or unresolved TELEGRAM_BOT_TOKEN");
-        tokio::spawn(async { pending::<anyhow::Result<()>>().await })
-    } else if config
-        .telegram
-        .webhook_url
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .is_some()
-    {
-        let bot = Bot::new(config.telegram.bot_token.clone());
-        finelor::messaging::adapters::telegram::register_telegram_command_menu(&bot).await?;
-        spawn_gateway_event_dispatcher(bot.clone(), app_state.clone());
-        configure_telegram_webhook(config.as_ref()).await?;
-        info!("Telegram webhook delivery configured; long polling disabled");
-        tokio::spawn(async { pending::<anyhow::Result<()>>().await })
-    } else {
-        let bot = Bot::new(config.telegram.bot_token.clone());
-        let bot_state = app_state.clone();
-        tokio::spawn(run_bot(bot, bot_state))
+    let messaging_task = match config.messaging.provider {
+        MessagingProvider::Telegram
+            if config
+                .messaging
+                .telegram
+                .webhook_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .is_some() =>
+        {
+            let bot = Bot::new(config.messaging.telegram.bot_token.clone());
+            finelor::messaging::adapters::telegram::register_telegram_command_menu(&bot).await?;
+            spawn_gateway_event_dispatcher(app_state.clone());
+            configure_telegram_webhook(config.as_ref()).await?;
+            info!("Telegram webhook delivery configured; long polling disabled");
+            tokio::spawn(async { pending::<anyhow::Result<()>>().await })
+        }
+        MessagingProvider::Telegram => {
+            let bot = Bot::new(config.messaging.telegram.bot_token.clone());
+            let bot_state = app_state.clone();
+            tokio::spawn(run_bot(bot, bot_state))
+        }
+        MessagingProvider::Slack => {
+            spawn_gateway_event_dispatcher(app_state.clone());
+            let state = agent_gateway_state(&app_state);
+            tokio::spawn(async move {
+                finelor::messaging::adapters::slack::run_slack_socket_mode(state).await
+            })
+        }
+        MessagingProvider::None => {
+            info!("Messaging provider disabled by configuration");
+            tokio::spawn(async { pending::<anyhow::Result<()>>().await })
+        }
     };
     let processor_context = agent_context.clone();
     recover_incomplete_jobs(&pool, &queue_producer)
@@ -230,8 +262,8 @@ async fn main() -> anyhow::Result<()> {
     info!("services started successfully");
 
     tokio::select! {
-        result = bot_task => {
-            result.context("bot task join failed")??;
+        result = messaging_task => {
+            result.context("messaging task join failed")??;
         }
         result = api_task => {
             result.context("api task join failed")??;
@@ -293,16 +325,11 @@ fn init_tracing(config: &AppConfig) {
         .init();
 }
 
-fn should_disable_bot(token: &str) -> bool {
-    let trimmed = token.trim();
-    trimmed.is_empty() || trimmed.contains("placeholder") || trimmed.contains("${")
-}
-
 fn telegram_webhook_secret(config: &AppConfig) -> String {
     use sha2::{Digest, Sha256};
 
     let mut hasher = Sha256::new();
-    hasher.update(config.telegram.bot_token.as_bytes());
+    hasher.update(config.messaging.telegram.bot_token.as_bytes());
     hasher.update(b":");
     hasher.update(config.session.secret.as_bytes());
     hex::encode(hasher.finalize())
@@ -310,19 +337,20 @@ fn telegram_webhook_secret(config: &AppConfig) -> String {
 
 async fn configure_telegram_webhook(config: &AppConfig) -> anyhow::Result<()> {
     let Some(webhook_url) = config
+        .messaging
         .telegram
         .webhook_url
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
     else {
-        anyhow::bail!("telegram.webhook_url is required for webhook mode");
+        anyhow::bail!("messaging.telegram.webhook_url is required for webhook mode");
     };
 
     let client = reqwest::Client::new();
     let set_url = format!(
         "https://api.telegram.org/bot{}/setWebhook",
-        config.telegram.bot_token
+        config.messaging.telegram.bot_token
     );
     let response = client
         .post(set_url)
@@ -339,7 +367,8 @@ async fn configure_telegram_webhook(config: &AppConfig) -> anyhow::Result<()> {
         anyhow::bail!("Telegram setWebhook returned {}", response.status());
     }
 
-    let actual_url = fetch_telegram_webhook_url(config.telegram.bot_token.as_str()).await?;
+    let actual_url =
+        fetch_telegram_webhook_url(config.messaging.telegram.bot_token.as_str()).await?;
     if actual_url != webhook_url {
         anyhow::bail!(
             "Telegram webhook verification failed: expected configured URL, got '{}'",
@@ -509,9 +538,15 @@ async fn telegram_webhook_handler(
     headers: HeaderMap,
     Json(update): Json<Update>,
 ) -> Result<StatusCode, (StatusCode, String)> {
+    if state.config.messaging.provider != MessagingProvider::Telegram {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "Telegram provider is not enabled".to_string(),
+        ));
+    }
     verify_telegram_webhook_secret(&state, &headers)?;
 
-    let bot = Bot::new(state.config.telegram.bot_token.clone());
+    let bot = Bot::new(state.config.messaging.telegram.bot_token.clone());
     finelor::messaging::adapters::telegram::handle_telegram_update(
         bot,
         update,
@@ -650,9 +685,10 @@ async fn require_authenticated_session(
 async fn run_bot(bot: Bot, state: AppState) -> anyhow::Result<()> {
     use teloxide::dispatching::{Dispatcher, UpdateFilterExt};
 
-    clear_telegram_webhook_for_polling(&bot, state.config.telegram.bot_token.as_str()).await?;
+    clear_telegram_webhook_for_polling(&bot, state.config.messaging.telegram.bot_token.as_str())
+        .await?;
     finelor::messaging::adapters::telegram::register_telegram_command_menu(&bot).await?;
-    spawn_gateway_event_dispatcher(bot.clone(), state.clone());
+    spawn_gateway_event_dispatcher(state.clone());
 
     let handler = dptree::entry()
         .branch(
