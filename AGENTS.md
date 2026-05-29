@@ -40,8 +40,7 @@ Prefer make commands.
 Required baseline checks for most changes:
 
 ```bash
-make check: ## Run baseline local checks (fmt, test, clippy)
-make test-integration-all
+make check
 ```
 
 Optional Docker smoke check:

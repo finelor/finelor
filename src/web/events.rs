@@ -145,7 +145,7 @@ pub async fn create_telegram_connect_session(
     ttl_seconds: usize,
 ) -> crate::error::AppResult<TelegramConnectSession> {
     let token = new_telegram_connect_token();
-    let connect_id = crate::telegram::connect_token_fingerprint(&token);
+    let connect_id = crate::integrations::telegram::connect_token_fingerprint(&token);
     let expires_at = chrono::Utc::now().timestamp() + ttl_seconds as i64;
     let session = TelegramConnectSession::new(token, connect_id, workspace_id, user_id, expires_at);
     store_telegram_connect_session(store, &session, ttl_seconds).await?;

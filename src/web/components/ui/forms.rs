@@ -33,7 +33,7 @@ pub fn TextInput(
                 class="input w-full"
                 required=required
                 disabled=disabled
-                value=move || value.get()
+                prop:value=move || value.get()
                 on:input=move |ev| {
                     let next = leptos_dom::helpers::event_target_value(&ev);
                     value.set(next.clone());

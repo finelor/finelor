@@ -112,7 +112,7 @@ pub fn Dashboard() -> impl IntoView {
                                         <ActionCard href="/settings?tab=channels".to_string()>
                                             <Eyebrow>"Send documents"</Eyebrow>
                                             <CardTitle>"Channels"</CardTitle>
-                                            <BodyText>"Manage Telegram and API"</BodyText>
+                                            <BodyText>"Manage Telegram, Slack, and API"</BodyText>
                                         </ActionCard>
                                         <Metric label="Total transactions" value=summary.document_counts.total.to_string() desc="synced from bank" />
                                         <Metric label="Needs review" value=summary.document_counts.pending.to_string() desc="pending approval" />
