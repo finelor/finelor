@@ -60,6 +60,45 @@ async fn public_api_rejects_missing_api_key() {
 }
 
 #[tokio::test]
+async fn public_api_ingestion_accepts_uploads_over_axum_default_body_limit() {
+    let pool = common::in_memory_pool().await;
+    let token = create_test_api_key(&pool).await;
+    let app = public_api_app(pool);
+
+    let boundary = "----FinelorLargeBoundary";
+    let mut body = Vec::new();
+    body.extend_from_slice(
+        b"------FinelorLargeBoundary\r\n\
+Content-Disposition: form-data; name=\"file\"; filename=\"large-invoice.pdf\"\r\n\
+Content-Type: application/pdf\r\n\r\n",
+    );
+    body.extend(std::iter::repeat_n(b'a', 2 * 1024 * 1024 + 1));
+    body.extend_from_slice(b"\r\n------FinelorLargeBoundary--\r\n");
+
+    let response = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/documents")
+                .header("Authorization", format!("Bearer {token}"))
+                .header(
+                    "Content-Type",
+                    format!("multipart/form-data; boundary={boundary}"),
+                )
+                .body(axum::body::Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        response.status().is_success(),
+        "large upload failed: {}",
+        response.status()
+    );
+}
+
+#[tokio::test]
 async fn public_api_ingests_lists_details_and_downloads_with_valid_key() {
     let pool = common::in_memory_pool().await;
     let token = create_test_api_key(&pool).await;

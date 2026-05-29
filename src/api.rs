@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::{
     Json, Router,
     body::Body,
-    extract::{FromRef, FromRequestParts, Multipart, Path, Query, State},
+    extract::{DefaultBodyLimit, FromRef, FromRequestParts, Multipart, Path, Query, State},
     http::{HeaderMap, StatusCode, request::Parts},
     response::Response,
     routing::{get, post},
@@ -23,6 +23,8 @@ use crate::{
     web::events::AppEventBus,
 };
 
+const DOCUMENT_UPLOAD_BODY_LIMIT_BYTES: usize = 10 * 1024 * 1024;
+
 #[derive(Clone)]
 pub struct PublicApiState {
     pub config: Arc<AppConfig>,
@@ -37,7 +39,12 @@ where
     PublicApiState: FromRef<S>,
 {
     Router::new()
-        .route("/documents", post(create_document).get(list_documents))
+        .route(
+            "/documents",
+            post(create_document)
+                .layer(DefaultBodyLimit::max(DOCUMENT_UPLOAD_BODY_LIMIT_BYTES))
+                .get(list_documents),
+        )
         .route("/documents/status", get(document_status))
         .route("/documents/{short_ref}", get(get_document))
         .route("/documents/{short_ref}/explain", get(explain_document))
