@@ -26,6 +26,10 @@ session:
 worker:
   max_job_retries: 3
 
+web:
+  allowed_hosts: "${WEB_ALLOWED_HOSTS}"
+  allowed_origins: "${WEB_ALLOWED_ORIGINS}"
+
 messaging:
   provider: "${MESSAGING_PROVIDER}"
   telegram:

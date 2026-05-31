@@ -33,6 +33,13 @@ pub fn PanelTitle(children: Children) -> impl IntoView {
 }
 
 #[component]
+pub fn InlinePanelTitle(children: Children) -> impl IntoView {
+    view! {
+        <span class="text-sm font-semibold text-base-content">{children()}</span>
+    }
+}
+
+#[component]
 pub fn HeroTitle(children: Children) -> impl IntoView {
     view! {
         <h2 class="break-words text-2xl font-bold leading-tight text-base-content md:text-3xl">

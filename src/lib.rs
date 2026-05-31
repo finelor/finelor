@@ -1,6 +1,8 @@
 #[cfg(feature = "ssr")]
 pub mod agents;
 #[cfg(feature = "ssr")]
+pub mod api;
+#[cfg(feature = "ssr")]
 pub mod confidence;
 #[cfg(feature = "ssr")]
 pub mod config;
@@ -19,6 +21,8 @@ pub mod integrations;
 #[cfg(feature = "ssr")]
 pub mod kv;
 #[cfg(feature = "ssr")]
+pub mod mcp;
+#[cfg(feature = "ssr")]
 pub mod messaging;
 #[cfg(feature = "ssr")]
 pub mod orchestration;
@@ -26,6 +30,8 @@ pub mod orchestration;
 pub mod query;
 #[cfg(feature = "ssr")]
 pub mod queue;
+#[cfg(feature = "ssr")]
+pub mod security;
 pub mod web;
 #[cfg(feature = "ssr")]
 pub mod workspace;

@@ -37,14 +37,12 @@ use tower_sessions::{
 use tower_sessions_sqlx_store::SqliteStore;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
-use uuid::Uuid;
 
 use finelor::web::pool::{set_ephemeral_store, set_pool};
 
 use finelor::agents::AgentContext;
 use finelor::config::{self, AppConfig, MessagingProvider};
 use finelor::db;
-use finelor::ingestion;
 use finelor::messaging::AgentGatewayState;
 use finelor::orchestration::{JobProcessor, recover_incomplete_jobs};
 use finelor::queue::{QueueProducer, create_in_memory_queue};
@@ -66,6 +64,17 @@ struct AppState {
 impl FromRef<AppState> for LeptosOptions {
     fn from_ref(state: &AppState) -> Self {
         state.leptos_options.clone()
+    }
+}
+
+impl FromRef<AppState> for finelor::api::PublicApiState {
+    fn from_ref(state: &AppState) -> Self {
+        Self {
+            config: state.config.clone(),
+            pool: state.pool.clone(),
+            queue_producer: state.queue_producer.clone(),
+            events: state.events.clone(),
+        }
     }
 }
 
@@ -442,21 +451,43 @@ fn build_router(state: &AppState) -> Router<AppState> {
     let site_pkg_dir = state.leptos_options.site_pkg_dir.to_string();
     let pkg_path = std::path::Path::new(&site_root).join(&site_pkg_dir);
     let pkg_route = format!("/{}", site_pkg_dir.trim_matches('/'));
+    let web_config = state.config.web.clone();
 
     let router = Router::new()
         .route("/favicon.ico", get(favicon_handler))
         .nest_service(pkg_route.as_str(), ServeDir::new(pkg_path))
         .route("/health", get(health))
-        .route("/api/events", get(events_handler))
-        .route("/api/telegram/webhook", post(telegram_webhook_handler))
-        .route("/api/{*fn_name}", post(leptos_axum::handle_server_fns))
-        .route("/api/ingest", axum::routing::post(ingest_handler))
         .route(
-            "/api/documents/{short_ref}/image",
-            get(get_document_image_handler),
-        );
+            "/_events",
+            get(events_handler).route_layer(axum::middleware::from_fn_with_state(
+                web_config.clone(),
+                finelor::security::validate_origin,
+            )),
+        )
+        .route("/webhooks/telegram", post(telegram_webhook_handler))
+        .route(
+            "/_server_fn/{*fn_name}",
+            post(leptos_axum::handle_server_fns).route_layer(axum::middleware::from_fn_with_state(
+                web_config.clone(),
+                finelor::security::validate_origin,
+            )),
+        )
+        .route(
+            "/_documents/{short_ref}/image",
+            get(get_document_image_handler).route_layer(axum::middleware::from_fn_with_state(
+                web_config.clone(),
+                finelor::security::validate_origin,
+            )),
+        )
+        .merge(
+            finelor::mcp::router(state.pool.clone(), web_config.clone()).with_state::<AppState>(()),
+        )
+        .nest("/api/v1", finelor::api::router());
 
-    finelor::web::mount_web_router(router, state)
+    finelor::web::mount_web_router(router, state).layer(axum::middleware::from_fn_with_state(
+        web_config,
+        finelor::security::validate_host,
+    ))
 }
 
 async fn favicon_handler() -> Response {
@@ -470,8 +501,9 @@ async fn favicon_handler() -> Response {
 
 async fn events_handler(
     State(state): State<AppState>,
-    _session: tower_sessions::Session,
+    session: tower_sessions::Session,
 ) -> Result<impl axum::response::IntoResponse, (StatusCode, String)> {
+    require_authenticated_session(&session).await?;
     info!("SSE client connected");
     let sync = AppEvent::new(finelor::workspace::active_workspace_id(), "sync", json!({}));
     let initial = tokio_stream::iter([Ok(sse_event(sync))]);
@@ -575,8 +607,9 @@ async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
 async fn get_document_image_handler(
     State(state): State<AppState>,
     AxumPath(short_ref): AxumPath<String>,
-    _session: tower_sessions::Session,
+    session: tower_sessions::Session,
 ) -> Result<Response, (axum::http::StatusCode, String)> {
+    require_authenticated_session(&session).await?;
     let row =
         sqlx::query("SELECT original_path, mime_type FROM documents WHERE short_ref = $1 LIMIT 1")
             .bind(short_ref.trim())
@@ -635,154 +668,18 @@ async fn get_document_image_handler(
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
-async fn ingest_handler(
-    State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
-    mut multipart: axum::extract::Multipart,
-) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
-    let mut file_bytes = Vec::new();
-    let mut filename = None;
-    let mut original_filename = None;
-    let mut mime_type = None;
-    let mut source = None;
-    let mut source_id = None;
-
-    while let Some(field) = multipart
-        .next_field()
+async fn require_authenticated_session(
+    session: &tower_sessions::Session,
+) -> Result<(), (StatusCode, String)> {
+    let user_id: Option<String> = session
+        .get("user_id")
         .await
-        .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, e.to_string()))?
-    {
-        let name = field.name().unwrap_or("").to_string();
-        if name == "file" {
-            if filename.is_none() {
-                filename = field.file_name().map(|s| s.to_string());
-            }
-            if original_filename.is_none() {
-                original_filename = field.file_name().map(|s| s.to_string());
-            }
-            if mime_type.is_none() {
-                mime_type = field.content_type().map(|s| s.to_string());
-            }
-            file_bytes = field
-                .bytes()
-                .await
-                .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, e.to_string()))?
-                .to_vec();
-        } else if name == "filename" {
-            let data = field
-                .bytes()
-                .await
-                .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, e.to_string()))?
-                .to_vec();
-            filename = Some(String::from_utf8_lossy(&data).to_string());
-        } else if name == "mime_type" {
-            let data = field
-                .bytes()
-                .await
-                .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, e.to_string()))?
-                .to_vec();
-            mime_type = Some(String::from_utf8_lossy(&data).to_string());
-        } else if name == "source" {
-            let data = field
-                .bytes()
-                .await
-                .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, e.to_string()))?
-                .to_vec();
-            source = Some(String::from_utf8_lossy(&data).to_string());
-        } else if name == "source_id" {
-            let data = field
-                .bytes()
-                .await
-                .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, e.to_string()))?
-                .to_vec();
-            source_id = Some(String::from_utf8_lossy(&data).to_string());
-        }
-    }
-
-    if file_bytes.is_empty() {
-        return Err((
-            axum::http::StatusCode::BAD_REQUEST,
-            "Missing 'file' field".to_string(),
-        ));
-    }
-
-    let source = source.unwrap_or_else(|| "API".to_string());
-    let source_id = source_id.as_deref();
-    let mime_type = mime_type.unwrap_or_else(|| "application/octet-stream".to_string());
-    let _filename = filename.unwrap_or_else(|| "upload.bin".to_string());
-
-    let source_timestamp = headers
-        .get("X-Source-Timestamp")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-    let profile_identifier = headers
-        .get("X-Submitter-ID")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-
-    let ext = if mime_type == "image/jpeg" || mime_type == "image/jpg" {
-        "jpg"
-    } else if mime_type == "image/png" {
-        "png"
-    } else if mime_type == "application/pdf" {
-        "pdf"
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if user_id.is_some() {
+        Ok(())
     } else {
-        "bin"
-    };
-
-    let doc_id = Uuid::new_v4();
-    let stored_filename = format!(
-        "{}_{}.{}",
-        chrono::Utc::now().timestamp_millis(),
-        doc_id,
-        ext
-    );
-
-    let external_artifact_id = if let Some(sid) = source_id {
-        Some(format!("{}_{}", source, sid))
-    } else {
-        Some(format!("api_{}", doc_id))
-    };
-
-    let artifact_metadata = json!({
-        "source": source,
-        "source_id": source_id,
-        "profile_identifier": profile_identifier,
-    });
-    let channel_identifier = source_id.unwrap_or("api").to_string();
-
-    let result = ingestion::ingest_document(
-        &state.pool,
-        state.config.as_ref(),
-        &state.queue_producer,
-        Some(&state.events),
-        ingestion::IngestionInput {
-            file_bytes,
-            filename: stored_filename,
-            mime_type,
-            document_type: "INVOICE".to_string(),
-            artifact: ingestion::DocumentArtifactInput {
-                channel_type: source,
-                channel_identifier,
-                profile_identifier,
-                external_artifact_id,
-                source_timestamp,
-                original_filename,
-                metadata: artifact_metadata,
-            },
-        },
-    )
-    .await
-    .map_err(|e| {
-        tracing::error!("ingest_document failed: {:#}", e);
-        (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-    })?;
-
-    Ok(Json(json!({
-        "document_id": result.id,
-        "short_ref": result.short_ref,
-        "status": "RECEIVED",
-    })))
+        Err((StatusCode::UNAUTHORIZED, "Not authenticated".to_string()))
+    }
 }
 
 async fn run_bot(bot: Bot, state: AppState) -> anyhow::Result<()> {

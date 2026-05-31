@@ -213,7 +213,7 @@ fn telegram_username(metadata: Option<&serde_json::Value>) -> Option<String> {
         .map(|value| value.trim_start_matches('@').to_string())
 }
 
-#[server(ListCompanyChannels, "/api")]
+#[server(ListCompanyChannels, "/_server_fn")]
 pub async fn list_company_channels() -> Result<Vec<CompanyChannel>, ServerFnError> {
     let pool = pool();
     let session: Session = leptos_axum::extract()
@@ -293,7 +293,7 @@ pub async fn list_company_channels() -> Result<Vec<CompanyChannel>, ServerFnErro
         .collect())
 }
 
-#[server(GetMessagingProviderStatus, "/api")]
+#[server(GetMessagingProviderStatus, "/_server_fn")]
 pub async fn get_messaging_provider_status() -> Result<MessagingProviderStatus, ServerFnError> {
     let session: Session = leptos_axum::extract()
         .await
@@ -331,7 +331,7 @@ pub async fn get_messaging_provider_status() -> Result<MessagingProviderStatus, 
     })
 }
 
-#[server(ListSlackAllowedChannels, "/api")]
+#[server(ListSlackAllowedChannels, "/_server_fn")]
 pub async fn list_slack_allowed_channels() -> Result<Vec<SlackAllowedChannel>, ServerFnError> {
     let pool = pool();
     let session: Session = leptos_axum::extract()
@@ -386,7 +386,7 @@ pub async fn list_slack_allowed_channels() -> Result<Vec<SlackAllowedChannel>, S
         .collect())
 }
 
-#[server(AddSlackAllowedChannel, "/api")]
+#[server(AddSlackAllowedChannel, "/_server_fn")]
 pub async fn add_slack_allowed_channel(
     channel_id: String,
 ) -> Result<SlackAllowedChannel, ServerFnError> {
@@ -462,7 +462,7 @@ pub async fn add_slack_allowed_channel(
     })
 }
 
-#[server(SearchSlackChannels, "/api")]
+#[server(SearchSlackChannels, "/_server_fn")]
 pub async fn search_slack_channels(
     query: String,
 ) -> Result<Vec<SlackChannelCandidate>, ServerFnError> {
@@ -512,7 +512,7 @@ pub async fn search_slack_channels(
         .collect())
 }
 
-#[server(VerifySlackAllowedChannel, "/api")]
+#[server(VerifySlackAllowedChannel, "/_server_fn")]
 pub async fn verify_slack_allowed_channel(
     channel_name: String,
 ) -> Result<SlackChannelVerification, ServerFnError> {
@@ -559,7 +559,7 @@ pub async fn verify_slack_allowed_channel(
     })
 }
 
-#[server(RemoveSlackAllowedChannel, "/api")]
+#[server(RemoveSlackAllowedChannel, "/_server_fn")]
 pub async fn remove_slack_allowed_channel(channel_id: String) -> Result<(), ServerFnError> {
     let pool = pool();
     let session: Session = leptos_axum::extract()
@@ -587,7 +587,7 @@ pub async fn remove_slack_allowed_channel(channel_id: String) -> Result<(), Serv
     Ok(())
 }
 
-#[server(VerifySlackAllowedUser, "/api")]
+#[server(VerifySlackAllowedUser, "/_server_fn")]
 pub async fn verify_slack_allowed_user(
     username: String,
 ) -> Result<SlackUserVerification, ServerFnError> {
@@ -637,7 +637,7 @@ pub async fn verify_slack_allowed_user(
     })
 }
 
-#[server(AddSlackAllowedUser, "/api")]
+#[server(AddSlackAllowedUser, "/_server_fn")]
 pub async fn add_slack_allowed_user(user_id: String) -> Result<SlackAllowedChannel, ServerFnError> {
     let pool = pool();
     let session: Session = leptos_axum::extract()
@@ -710,7 +710,7 @@ pub async fn add_slack_allowed_user(user_id: String) -> Result<SlackAllowedChann
     })
 }
 
-#[server(SearchSlackUsers, "/api")]
+#[server(SearchSlackUsers, "/_server_fn")]
 pub async fn search_slack_users(query: String) -> Result<Vec<SlackUserCandidate>, ServerFnError> {
     let pool = pool();
     let session: Session = leptos_axum::extract()
@@ -758,7 +758,7 @@ pub async fn search_slack_users(query: String) -> Result<Vec<SlackUserCandidate>
         .collect())
 }
 
-#[server(GetTelegramChannelAvatar, "/api")]
+#[server(GetTelegramChannelAvatar, "/_server_fn")]
 pub async fn get_telegram_channel_avatar(channel_id: i64) -> Result<Option<String>, ServerFnError> {
     let pool = pool();
     let session: Session = leptos_axum::extract()
@@ -806,7 +806,7 @@ pub async fn get_telegram_channel_avatar(channel_id: i64) -> Result<Option<Strin
     Ok(Some(data_url))
 }
 
-#[server(DeleteCompanyChannel, "/api")]
+#[server(DeleteCompanyChannel, "/_server_fn")]
 pub async fn delete_company_channel(channel_id: i64) -> Result<(), ServerFnError> {
     let pool = pool();
     let session: Session = leptos_axum::extract()
@@ -825,7 +825,7 @@ pub async fn delete_company_channel(channel_id: i64) -> Result<(), ServerFnError
     }
 }
 
-#[server(ConnectTelegramChannel, "/api")]
+#[server(ConnectTelegramChannel, "/_server_fn")]
 pub async fn connect_telegram_channel(chat_id: String) -> Result<String, ServerFnError> {
     let pool = pool();
     let session: Session = leptos_axum::extract()
@@ -844,7 +844,7 @@ pub async fn connect_telegram_channel(chat_id: String) -> Result<String, ServerF
     connect_telegram_for_workspace(&pool, workspace_id, parsed).await
 }
 
-#[server(CreateTelegramConnectLink, "/api")]
+#[server(CreateTelegramConnectLink, "/_server_fn")]
 pub async fn create_telegram_connect_link() -> Result<TelegramConnectLink, ServerFnError> {
     let session: Session = leptos_axum::extract()
         .await
@@ -898,7 +898,7 @@ pub async fn create_telegram_connect_link() -> Result<TelegramConnectLink, Serve
     })
 }
 
-#[server(GetTelegramConnectStatus, "/api")]
+#[server(GetTelegramConnectStatus, "/_server_fn")]
 pub async fn get_telegram_connect_status(
     connect_id: String,
 ) -> Result<TelegramConnectStatus, ServerFnError> {

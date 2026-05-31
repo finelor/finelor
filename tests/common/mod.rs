@@ -143,6 +143,18 @@ pub fn test_config() -> finelor::config::AppConfig {
             secure: false,
         },
         worker: finelor::config::WorkerConfig { max_job_retries: 1 },
+        web: finelor::config::WebConfig {
+            allowed_hosts: vec![
+                "localhost".to_string(),
+                "127.0.0.1".to_string(),
+                "::1".to_string(),
+                "0.0.0.0".to_string(),
+            ],
+            allowed_origins: vec![
+                "http://localhost:3000".to_string(),
+                "http://127.0.0.1:3000".to_string(),
+            ],
+        },
         messaging: finelor::config::MessagingConfig {
             provider: finelor::config::MessagingProvider::Telegram,
             telegram: finelor::config::TelegramConfig {
@@ -299,7 +311,7 @@ impl TestContext {
             .with_signed(Key::from(session_secret.as_bytes()));
         let app = axum::Router::new()
             .route(
-                "/api/{*fn_name}",
+                "/_server_fn/{*fn_name}",
                 axum::routing::post(leptos_axum::handle_server_fns),
             )
             .layer(session_layer);

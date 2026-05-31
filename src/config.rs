@@ -2,7 +2,7 @@ use std::env;
 use std::fs;
 
 use config::{Environment, File, FileFormat};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::Value as JsonValue;
 
 use crate::error::AppResult;
@@ -13,6 +13,7 @@ pub struct AppConfig {
     pub database: DatabaseConfig,
     pub session: SessionConfig,
     pub worker: WorkerConfig,
+    pub web: WebConfig,
     pub messaging: MessagingConfig,
     pub upload: UploadConfig,
     pub export: ExportConfig,
@@ -80,6 +81,14 @@ pub struct SessionConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct WorkerConfig {
     pub max_job_retries: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WebConfig {
+    #[serde(deserialize_with = "deserialize_string_list")]
+    pub allowed_hosts: Vec<String>,
+    #[serde(deserialize_with = "deserialize_string_list")]
+    pub allowed_origins: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -255,6 +264,33 @@ fn expand_env_placeholders(input: &str) -> AppResult<String> {
     Ok(output)
 }
 
+fn deserialize_string_list<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = JsonValue::deserialize(deserializer)?;
+    match value {
+        JsonValue::Array(items) => items
+            .into_iter()
+            .map(|item| match item {
+                JsonValue::String(value) => Ok(value),
+                other => Err(serde::de::Error::custom(format!(
+                    "expected string list item, got {other}"
+                ))),
+            })
+            .collect(),
+        JsonValue::String(value) => Ok(value
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()),
+        other => Err(serde::de::Error::custom(format!(
+            "expected string or string list, got {other}"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,6 +314,35 @@ mod tests {
     fn assistant_soul_prompt_path_exists_in_base_config() {
         let raw = fs::read_to_string("config.yaml").expect("config.yaml");
         assert!(raw.contains("assistant_soul_prompt_path:"));
+    }
+
+    #[test]
+    fn web_security_defaults_exist_in_base_config() {
+        let raw = fs::read_to_string("config.yaml").expect("config.yaml");
+        assert!(raw.contains("web:"));
+        assert!(raw.contains("allowed_hosts:"));
+        assert!(raw.contains("allowed_origins:"));
+        assert!(raw.contains("${WEB_ALLOWED_HOSTS}"));
+        assert!(raw.contains("${WEB_ALLOWED_ORIGINS}"));
+    }
+
+    #[test]
+    fn string_list_fields_accept_comma_separated_values() {
+        let value = serde_json::json!({
+            "allowed_hosts": "finelor.example,www.finelor.example",
+            "allowed_origins": "https://finelor.example, https://www.finelor.example"
+        });
+
+        let config: WebConfig = serde_json::from_value(value).expect("deserialize web config");
+
+        assert_eq!(
+            config.allowed_hosts,
+            vec!["finelor.example", "www.finelor.example"]
+        );
+        assert_eq!(
+            config.allowed_origins,
+            vec!["https://finelor.example", "https://www.finelor.example"]
+        );
     }
 
     #[test]

@@ -44,7 +44,7 @@ pub async fn require_session_workspace_id(session: &Session) -> Result<Uuid, Ser
     Ok(crate::workspace::active_workspace_id())
 }
 
-#[server(Signup, "/api")]
+#[server(Signup, "/_server_fn")]
 pub async fn signup(
     full_name: String,
     email: String,
@@ -137,7 +137,7 @@ pub async fn signup(
     Ok(user.id.to_string())
 }
 
-#[server(Login, "/api")]
+#[server(Login, "/_server_fn")]
 pub async fn login(email: String, password: String) -> Result<String, ServerFnError> {
     let headers: HeaderMap = leptos_axum::extract()
         .await
@@ -190,7 +190,7 @@ pub async fn login(email: String, password: String) -> Result<String, ServerFnEr
     Ok(user.id.to_string())
 }
 
-#[server(Logout, "/api")]
+#[server(Logout, "/_server_fn")]
 pub async fn logout() -> Result<(), ServerFnError> {
     let headers: HeaderMap = leptos_axum::extract()
         .await
@@ -246,7 +246,7 @@ pub struct MonthlyCloseItem {
     pub closed: bool,
 }
 
-#[server(GetDashboardSummary, "/api")]
+#[server(GetDashboardSummary, "/_server_fn")]
 pub async fn get_dashboard_summary() -> Result<DashboardSummary, ServerFnError> {
     let pool = pool();
     let session: Session = leptos_axum::extract()
@@ -464,7 +464,7 @@ async fn query_documents(
         .collect())
 }
 
-#[server(CompleteCompanyOnboarding, "/api")]
+#[server(CompleteCompanyOnboarding, "/_server_fn")]
 pub async fn complete_company_onboarding(company_name: String) -> Result<(), ServerFnError> {
     let pool = pool();
     let session: Session = leptos_axum::extract()
@@ -492,7 +492,7 @@ pub async fn complete_company_onboarding(company_name: String) -> Result<(), Ser
     Ok(())
 }
 
-#[server(GetSessionUser, "/api")]
+#[server(GetSessionUser, "/_server_fn")]
 pub async fn get_session_user() -> Result<Option<AuthUser>, ServerFnError> {
     let pool = pool();
     let session: Session = leptos_axum::extract()
@@ -554,7 +554,7 @@ pub struct TransactionsResponse {
     pub completion_rate: i64,
 }
 
-#[server(GetDocumentList, "/api")]
+#[server(GetDocumentList, "/_server_fn")]
 pub async fn get_document_list(
     month: Option<String>,
     status_filter: Option<String>,
@@ -659,7 +659,7 @@ pub struct AccountingRow {
     pub is_debit: Option<bool>,
 }
 
-#[server(GetDocumentDetails, "/api")]
+#[server(GetDocumentDetails, "/_server_fn")]
 pub async fn get_document_details(
     short_ref: String,
 ) -> Result<Option<DocumentDetails>, ServerFnError> {
