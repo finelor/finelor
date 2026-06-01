@@ -1,0 +1,47 @@
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    command:
+      - caddy
+      - reverse-proxy
+      - --from
+      - ${PUBLIC_HOST:?set PUBLIC_HOST}
+      - --to
+      - app:3000
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+
+  app:
+    image: ghcr.io/finelor/finelor:latest
+    restart: unless-stopped
+    depends_on:
+      - caddy
+    environment:
+      DATABASE_PATH: /app/.finelor/db/finelor.db
+      UPLOAD_STORAGE_PATH: /app/.finelor/uploads
+      EXPORT_OUTPUT_PATH: /app/.finelor/exports
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:?set OLLAMA_API_KEY}
+      WEB_ALLOWED_HOSTS: ${WEB_ALLOWED_HOSTS:-${PUBLIC_HOST}}
+      WEB_ALLOWED_ORIGINS: ${WEB_ALLOWED_ORIGINS:-https://${PUBLIC_HOST}}
+      MESSAGING_PROVIDER: ${MESSAGING_PROVIDER:?set MESSAGING_PROVIDER to telegram or slack}
+      MESSAGING_TELEGRAM_BOT_TOKEN: ${MESSAGING_TELEGRAM_BOT_TOKEN:-}
+      MESSAGING_SLACK_BOT_TOKEN: ${MESSAGING_SLACK_BOT_TOKEN:-}
+      MESSAGING_SLACK_APP_TOKEN: ${MESSAGING_SLACK_APP_TOKEN:-}
+    volumes:
+      - finelor_runtime:/app/.finelor
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  finelor_runtime:
+  caddy_data:
+  caddy_config:

@@ -43,6 +43,10 @@ pub async fn validate_origin(
 }
 
 fn host_is_allowed(headers: &HeaderMap, allowed_hosts: &[String]) -> bool {
+    if allows_any(allowed_hosts) {
+        return true;
+    }
+
     let Some(requested) = headers
         .get(header::HOST)
         .and_then(|value| value.to_str().ok())
@@ -64,6 +68,10 @@ fn host_is_allowed(headers: &HeaderMap, allowed_hosts: &[String]) -> bool {
 }
 
 fn origin_is_allowed(headers: &HeaderMap, allowed_origins: &[String]) -> bool {
+    if allows_any(allowed_origins) {
+        return true;
+    }
+
     let Some(origin) = headers
         .get(header::ORIGIN)
         .and_then(|value| value.to_str().ok())
@@ -76,6 +84,10 @@ fn origin_is_allowed(headers: &HeaderMap, allowed_origins: &[String]) -> bool {
         .iter()
         .map(|value| normalize_origin(value))
         .any(|allowed| allowed == origin)
+}
+
+fn allows_any(values: &[String]) -> bool {
+    values.iter().any(|value| value.trim() == "*")
 }
 
 fn normalize_origin(value: &str) -> String {
@@ -142,6 +154,14 @@ mod tests {
     }
 
     #[test]
+    fn host_allowlist_allows_wildcard() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("203.0.113.10:3000"));
+
+        assert!(host_is_allowed(&headers, &["*".to_string()]));
+    }
+
+    #[test]
     fn origin_allowlist_allows_missing_origin() {
         let headers = HeaderMap::new();
 
@@ -163,5 +183,16 @@ mod tests {
             &headers,
             &["https://finelor.example".to_string()]
         ));
+    }
+
+    #[test]
+    fn origin_allowlist_allows_wildcard() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("http://203.0.113.10:3000"),
+        );
+
+        assert!(origin_is_allowed(&headers, &["*".to_string()]));
     }
 }

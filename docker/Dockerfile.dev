@@ -3,6 +3,8 @@
 FROM lukemathwalker/cargo-chef:latest-rust-1.95.0 AS chef
 WORKDIR /app
 
+COPY Cargo.lock ./
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends pkg-config libssl-dev ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -16,7 +18,7 @@ RUN set -eux; \
       *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
     esac; \
     LEPTOS_VERSION=v0.3.6; \
-    WASM_BINDGEN_VERSION=0.2.118; \
+    WASM_BINDGEN_VERSION="$(awk '/^name = "wasm-bindgen"$/ { found=1; next } found && /^version = / { gsub(/"/, "", $3); print $3; exit }' Cargo.lock)"; \
     curl --fail --show-error --location \
       --output "/tmp/cargo-leptos-${LEPTOS_TRIPLE}.tar.gz" \
       "https://github.com/leptos-rs/cargo-leptos/releases/download/${LEPTOS_VERSION}/cargo-leptos-${LEPTOS_TRIPLE}.tar.gz"; \
@@ -79,5 +81,8 @@ COPY --from=builder /app/target/site ./target/site
 COPY migrations ./migrations
 COPY assets ./assets
 COPY config.yaml ./config.yaml
+COPY docker/entrypoint.sh /usr/local/bin/finelor-entrypoint
+RUN chmod 0755 /usr/local/bin/finelor-entrypoint
 
+ENTRYPOINT ["finelor-entrypoint"]
 CMD ["finelor"]
