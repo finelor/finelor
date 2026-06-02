@@ -8,6 +8,12 @@
 
 We are building and sharing openly the foundational infrastructure for autonomous and intelligent, AI-native financial operations where businesses interact conversationally with intelligent agents instead of traditional accounting systems and manual workflows.
 
+## Deploy on Hostinger
+
+[![Deploy on Hostinger](https://assets.hostinger.com/vps/deploy.svg)](https://www.hostinger.com/docker-hosting?compose_url=https%3A%2F%2Fraw.githubusercontent.com%2Ffinelor%2Ffinelor%2Fmain%2Fdeploy%2Fhostinger%2Fdocker-compose.yml&REFERRALCODE=WUPFTOREF749)
+
+Deploy Finelor on a Hostinger Docker VPS from the prebuilt `ghcr.io/finelor/finelor:latest` image. The referral link may provide a 20% Hostinger discount for eligible new customers. See the [Hostinger deployment guide](docs/hostinger.md) for setup, required environment variables, first login, and domain hardening.
+
 ## Features
 
 - document (invoice and receipts) ingestion and processing

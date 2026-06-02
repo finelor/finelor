@@ -54,7 +54,7 @@ FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo chef cook --recipe-path recipe.json
+    cargo chef cook --release --recipe-path recipe.json
 
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY src ./src
@@ -67,19 +67,28 @@ ENV LEPTOS_TAILWIND_VERSION=v4.2.1
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/root/.cache/cargo-leptos \
-    cargo leptos build
+    cargo leptos build --release
 
 FROM debian:bookworm-slim AS runtime
+LABEL org.opencontainers.image.source=https://github.com/finelor/finelor
+
 WORKDIR /app
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates wget \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /app/target/debug/finelor /usr/local/bin/finelor
+COPY --from=builder /app/target/release/finelor /usr/local/bin/finelor
 COPY --from=builder /app/target/site ./target/site
 COPY migrations ./migrations
 COPY assets ./assets
 COPY config.yaml ./config.yaml
 
+CMD ["finelor"]
+
+FROM runtime AS hostinger
+COPY deploy/hostinger/entrypoint.sh /usr/local/bin/finelor-hostinger-entrypoint
+RUN chmod 0755 /usr/local/bin/finelor-hostinger-entrypoint
+
+ENTRYPOINT ["finelor-hostinger-entrypoint"]
 CMD ["finelor"]

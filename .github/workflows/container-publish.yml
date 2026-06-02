@@ -48,7 +48,8 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: docker/Dockerfile.release
+          file: deploy/Dockerfile
+          target: hostinger
           platforms: linux/amd64
           push: ${{ github.ref == 'refs/heads/main' }}
           tags: ${{ steps.meta.outputs.tags }}

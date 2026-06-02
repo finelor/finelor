@@ -81,8 +81,5 @@ COPY --from=builder /app/target/site ./target/site
 COPY migrations ./migrations
 COPY assets ./assets
 COPY config.yaml ./config.yaml
-COPY docker/entrypoint.sh /usr/local/bin/finelor-entrypoint
-RUN chmod 0755 /usr/local/bin/finelor-entrypoint
 
-ENTRYPOINT ["finelor-entrypoint"]
 CMD ["finelor"]
