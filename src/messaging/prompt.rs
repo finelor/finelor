@@ -1,8 +1,11 @@
+use std::sync::Arc;
+
 use uuid::Uuid;
 
 use crate::config::AppConfig;
 use crate::inference::ChatMessage;
 use crate::query::{DocumentStatusCounts, DocumentSummary, WorkspaceProfile};
+use crate::skills::SkillRegistry;
 
 use super::contracts::MessageSource;
 use super::conversation::ConversationContext;
@@ -20,6 +23,7 @@ pub struct PromptAssemblyInput<'a> {
     pub text: &'a str,
     pub accounting_context: Option<AccountingContextSnapshot>,
     pub conversation_context: Option<ConversationContext>,
+    pub skills_registry: Option<Arc<SkillRegistry>>,
 }
 
 #[derive(Debug, Clone)]
@@ -72,6 +76,14 @@ fn assemble_system_prompt(input: &PromptAssemblyInput<'_>) -> String {
         .unwrap_or_else(|| {
             "No recent session context is available. Resolve references only from the current message, snapshot, or tool results.".to_string()
         });
+
+    // Load and format skills context
+    let skills_context = if let Some(registry) = input.skills_registry.as_ref() {
+        format_skills_context(registry)
+    } else {
+        "No skills registry available.".to_string()
+    };
+
     format!(
         "{soul}\n\n\
          # Runtime Context\n\
@@ -80,6 +92,8 @@ fn assemble_system_prompt(input: &PromptAssemblyInput<'_>) -> String {
          Channel: {platform}\n\
          Channel identifier: {channel_identifier}\n\
          Profile identifier: {profile}\n\n\
+         # Available Skills\n\
+         {skills_context}\n\n\
          # Workspace Accounting Snapshot\n\
          {accounting_context}\n\n\
          # Recent Session Context\n\
@@ -131,6 +145,71 @@ fn format_conversation_context(context: &ConversationContext) -> String {
         }
         lines.push("- \"those\" may refer to the latest ordered refs above.".to_string());
     }
+
+    lines.join("\n")
+}
+
+/// Format the skills context for the system prompt.
+/// This is an async function that loads skills at prompt assembly time.
+/// Includes lazy initialization to ensure skills are available even if the
+/// registry was not initialized during startup.
+fn format_skills_context(registry: &SkillRegistry) -> String {
+    // Create a Tokio runtime for blocking operation
+    // Since this is called synchronously from the prompt assembly function,
+    // we need to handle the async skill registry operations
+    let rt = match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            // We're already in a tokio runtime, block on it
+            tokio::task::block_in_place(|| {
+                handle.block_on(async move {
+                    // Lazy initialization: ensure registry is populated
+                    if registry.is_empty().await {
+                        tracing::debug!("Skills registry is empty at prompt assembly time, attempting lazy initialization");
+                        if let Err(e) = registry.initialize().await {
+                            tracing::error!(error = %e, "Failed to lazily initialize skills registry");
+                        } else {
+                            tracing::info!("Skills registry lazily initialized successfully");
+                        }
+                    }
+                    build_skills_context(registry).await
+                })
+            })
+        }
+        Err(_) => {
+            // No tokio runtime, create a temporary one
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async move {
+                // Lazy initialization: ensure registry is populated
+                if registry.is_empty().await {
+                    tracing::debug!("Skills registry is empty at prompt assembly time, attempting lazy initialization");
+                    if let Err(e) = registry.initialize().await {
+                        tracing::error!(error = %e, "Failed to lazily initialize skills registry");
+                    } else {
+                        tracing::info!("Skills registry lazily initialized successfully");
+                    }
+                }
+                build_skills_context(registry).await
+            })
+        }
+    };
+    rt
+}
+
+async fn build_skills_context(registry: &SkillRegistry) -> String {
+    let skills = registry.get_all_skills().await;
+
+    if skills.is_empty() {
+        return "No skills are currently loaded.".to_string();
+    }
+
+    let mut lines = vec![];
+    lines.push("Skills available:".to_string());
+    for skill in skills {
+        lines.push(format!("- {}: {}", skill.name(), skill.description()));
+    }
+    lines.push(String::new());
+    lines
+        .push("To use a skill, reference it by name or use the /skill <name> command.".to_string());
 
     lines.join("\n")
 }
@@ -268,6 +347,7 @@ mod tests {
             text: "Hello",
             accounting_context: None,
             conversation_context: None,
+            skills_registry: None,
         });
 
         assert_eq!(messages.len(), 2);
@@ -289,6 +369,8 @@ mod tests {
                 .content
                 .contains("Do not claim access to document status")
         );
+        assert!(messages[0].content.contains("# Available Skills"));
+        assert!(messages[0].content.contains("No skills registry available"));
         assert!(messages[0].content.contains("Runtime Tools"));
         assert!(messages[0].content.contains("Recent Session Context"));
         assert!(messages[0].content.contains("No recent session context"));
@@ -349,6 +431,7 @@ mod tests {
             text: "What needs attention?",
             accounting_context: Some(snapshot),
             conversation_context: None,
+            skills_registry: None,
         });
 
         let system = &messages[0].content;
@@ -404,6 +487,7 @@ mod tests {
             text: "Why the first one?",
             accounting_context: None,
             conversation_context: Some(conversation_context),
+            skills_registry: None,
         });
 
         assert_eq!(messages.len(), 4);

@@ -15,6 +15,7 @@ use finelor::messaging::interactions::{
     start_document_interaction,
 };
 use finelor::queue::{JobType, QueueProducer};
+use finelor::skills::SkillRegistry;
 use finelor::web::events::AppEventBus;
 use serde_json::json;
 use sqlx::SqlitePool;
@@ -77,6 +78,7 @@ fn gateway_state(
         events: AppEventBus::new(16),
         running_sessions: Arc::new(Mutex::new(Default::default())),
         active_document_interaction_sessions: Arc::new(Mutex::new(Default::default())),
+        skills_registry: Arc::new(SkillRegistry::new()),
     }
 }
 

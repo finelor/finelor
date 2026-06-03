@@ -28,6 +28,8 @@ pub enum AppError {
     Serialization(String),
     #[error("zip error: {0}")]
     Zip(String),
+    #[error("skill error: {0}")]
+    Skill(String),
 }
 
 impl From<zip::result::ZipError> for AppError {

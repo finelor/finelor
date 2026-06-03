@@ -59,6 +59,7 @@ struct AppState {
     events: AppEventBus,
     running_agent_sessions: Arc<Mutex<HashSet<String>>>,
     active_document_interaction_sessions: Arc<Mutex<HashSet<String>>>,
+    skills_registry: Arc<finelor::skills::SkillRegistry>,
 }
 
 impl FromRef<AppState> for LeptosOptions {
@@ -87,6 +88,7 @@ fn agent_gateway_state(state: &AppState) -> AgentGatewayState {
         events: state.events.clone(),
         running_sessions: state.running_agent_sessions.clone(),
         active_document_interaction_sessions: state.active_document_interaction_sessions.clone(),
+        skills_registry: state.skills_registry.clone(),
     }
 }
 
@@ -191,6 +193,18 @@ async fn main() -> anyhow::Result<()> {
         .with_always_save(true)
         .with_signed(session_cookie_key(config.session.secret.as_str())?);
 
+    let skills_registry = Arc::new(finelor::skills::SkillRegistry::new());
+    if let Err(e) = skills_registry.initialize().await {
+        error!(error = %e, "Failed to initialize skills registry - invoice generation and other skill-based features may not work");
+    } else {
+        let skills = skills_registry.get_all_skills().await;
+        info!(
+            count = skills.len(),
+            skill_names = ?skills.iter().map(|s| s.name().to_string()).collect::<Vec<_>>(),
+            "Skills registry initialized successfully"
+        );
+    }
+
     let app_state = AppState {
         config: config.clone(),
         pool: pool.clone(),
@@ -200,6 +214,7 @@ async fn main() -> anyhow::Result<()> {
         events,
         running_agent_sessions: Arc::new(Mutex::new(HashSet::new())),
         active_document_interaction_sessions: Arc::new(Mutex::new(HashSet::new())),
+        skills_registry,
     };
 
     let api = build_router(&app_state)
