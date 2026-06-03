@@ -12,7 +12,7 @@ We are building and sharing openly the foundational infrastructure for autonomou
 
 [![Deploy on Hostinger](https://assets.hostinger.com/vps/deploy.svg)](https://www.hostinger.com/docker-hosting?compose_url=https%3A%2F%2Fraw.githubusercontent.com%2Ffinelor%2Ffinelor%2Fmain%2Fdeploy%2Fhostinger%2Fdocker-compose.yml&REFERRALCODE=WUPFTOREF749)
 
-Deploy Finelor on a Hostinger Docker VPS from the prebuilt `ghcr.io/finelor/finelor:latest` image. The referral link may provide a 20% Hostinger discount for eligible new customers. See the [Hostinger deployment guide](docs/hostinger.md) for setup, required environment variables, first login, and domain hardening.
+Start the Hostinger Docker VPS setup for Finelor from the prebuilt `ghcr.io/finelor/finelor:latest` image. The referral link may provide a 20% Hostinger discount for eligible new customers. See the [Hostinger deployment guide](docs/hostinger.md) for the remaining Hostinger setup steps, required values, first login, and domain setup.
 
 ## Features
 
