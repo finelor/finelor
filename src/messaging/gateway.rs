@@ -28,7 +28,7 @@ use super::confirmations::{
     cancel_agent_confirmation, consume_agent_confirmation, create_agent_confirmation,
 };
 use super::contracts::{
-    ActionButton, AgentInboundMessage, DocumentAction, GatewayActionResponse, GatewayAttachment,
+    ActionButton, AgentInboundMessage, DocumentAction, GatewayActionResponse,
     GatewayMessageResponse, MessageSource, ReviewFieldAction,
 };
 use super::conversation::{
@@ -215,7 +215,8 @@ impl AgentGatewayState {
             accounting_context,
             conversation_context,
             skills_registry: Some(self.skills_registry.clone()),
-        });
+        })
+        .await;
 
         let allow_mutating_tools = matches!(directive, AgentTurnDirective::Freeform);
         let mut metadata = AgentTurnMetadata::from_user_text(text);
@@ -476,103 +477,6 @@ impl AgentGatewayState {
                     };
                 Ok(confirmation_response(confirmation.id, message))
             }
-            "prepare_generate_invoice" => {
-                tracing::info!(
-                    raw_args = %tool_call.args,
-                    "prepare_generate_invoice received tool arguments"
-                );
-
-                // Build invoice payload from tool args
-                let payload = invoice_payload_from_tool_args(&tool_call.args)?;
-                tracing::info!(
-                    normalized_payload = %payload,
-                    "prepare_generate_invoice normalized invoice payload"
-                );
-
-                // Validate required fields and return user-friendly message
-                if payload.get("customer_name").is_none() {
-                    tracing::warn!(
-                        normalized_payload = %payload,
-                        "prepare_generate_invoice missing customer_name after normalization"
-                    );
-                    return Ok(GatewayMessageResponse::text(
-                        "I'd be happy to generate an invoice for you. First, I need to know:\n\n1. What is the customer's name?".to_string()
-                    ));
-                }
-
-                if payload.get("items").is_none()
-                    || payload
-                        .get("items")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| arr.is_empty())
-                        .unwrap_or(true)
-                {
-                    tracing::warn!(
-                        normalized_payload = %payload,
-                        "prepare_generate_invoice missing valid items after normalization"
-                    );
-                    return Ok(GatewayMessageResponse::text(
-                        "Great! Next, I need to know what items to include on the invoice.\n\nPlease provide:\n- Item descriptions\n- Quantities\n- Prices per unit".to_string()
-                    ));
-                }
-
-                // Extract items as array for calculation
-                let items = payload
-                    .get("items")
-                    .and_then(|v| v.as_array())
-                    .expect("items validated above");
-
-                // Calculate totals
-                let subtotal: f64 = items
-                    .iter()
-                    .filter_map(|item| {
-                        let qty = item.get("qty")?.as_f64()?;
-                        let price = item.get("price")?.as_f64()?;
-                        Some(qty * price)
-                    })
-                    .sum();
-
-                let tax_rate = payload
-                    .get("tax_rate")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0);
-                let tax_amount = subtotal * (tax_rate / 100.0);
-                let total = subtotal + tax_amount;
-
-                // Build confirmation message
-                let customer_name = payload
-                    .get("customer_name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("Unknown");
-
-                let message = format!(
-                    "**Invoice Preview**\n\n\
-                    Customer: {}\n\
-                    Items: {}\n\
-                    Subtotal: ${:.2}\n\
-                    Tax ({}%): ${:.2}\n\
-                    **Total: ${:.2}**\n\n\
-                    Confirm generate invoice PDF?",
-                    customer_name,
-                    items.len(),
-                    subtotal,
-                    tax_rate,
-                    tax_amount,
-                    total
-                );
-
-                let confirmation = self
-                    .store_confirmation(
-                        workspace_id,
-                        source,
-                        None, // Invoice generation doesn't have a document_id
-                        AgentConfirmationActionKind::GenerateInvoice,
-                        payload,
-                    )
-                    .await?;
-
-                Ok(confirmation_response(confirmation.id, message))
-            }
             other => Ok(GatewayMessageResponse::text(format!(
                 "I cannot prepare that action yet: {}.",
                 other
@@ -791,9 +695,6 @@ impl AgentGatewayState {
                 let args = confirmation_export_args(&confirmation);
                 export_documents(self, source, confirmation.workspace_id, &args).await?
             }
-            AgentConfirmationActionKind::GenerateInvoice => {
-                generate_invoice_from_confirmation(&confirmation).await?
-            }
         };
 
         Ok(GatewayActionResponse::from_message_response(
@@ -951,210 +852,6 @@ fn confirmation_export_args(confirmation: &AgentConfirmation) -> GatewayIntentAr
             .get("confidence_min")
             .and_then(|value| value.as_f64()),
     }
-}
-
-/// Build invoice payload from tool call arguments
-fn invoice_payload_from_tool_args(args: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
-    let mut payload = serde_json::Map::new();
-
-    // Required fields
-    if let Some(value) = args.get("customer_name").and_then(|v| v.as_str()) {
-        payload.insert("customer_name".to_string(), json!(value));
-    }
-
-    if let Some(value) = args.get("customer_address").and_then(|v| v.as_str()) {
-        payload.insert("customer_address".to_string(), json!(value));
-    }
-
-    if let Some(value) = args.get("customer_email").and_then(|v| v.as_str()) {
-        payload.insert("customer_email".to_string(), json!(value));
-    }
-
-    // Items array
-    if let Some(items) = args.get("items").and_then(|v| v.as_array()) {
-        let items_vec: Vec<serde_json::Value> = items
-            .iter()
-            .filter_map(|item| {
-                let description = item.get("description")?.as_str()?;
-                let qty = item.get("qty")?.as_f64()?;
-                let price = item.get("price")?.as_f64()?;
-                let total = qty * price;
-                Some(json!({
-                    "description": description,
-                    "qty": qty,
-                    "price": price,
-                    "total": total
-                }))
-            })
-            .collect();
-        if !items_vec.is_empty() {
-            payload.insert("items".to_string(), json!(items_vec));
-        }
-    }
-
-    // Optional fields
-    if let Some(value) = args.get("tax_rate").and_then(|v| v.as_f64()) {
-        payload.insert("tax_rate".to_string(), json!(value));
-    } else {
-        payload.insert("tax_rate".to_string(), json!(0.0));
-    }
-
-    if let Some(value) = args.get("due_date").and_then(|v| v.as_str()) {
-        payload.insert("due_date".to_string(), json!(value));
-    }
-
-    if let Some(value) = args.get("payment_terms").and_then(|v| v.as_str()) {
-        payload.insert("payment_terms".to_string(), json!(value));
-    }
-
-    if let Some(value) = args.get("notes").and_then(|v| v.as_str()) {
-        payload.insert("notes".to_string(), json!(value));
-    }
-
-    Ok(serde_json::Value::Object(payload))
-}
-
-/// Generate invoice HTML attachment from confirmation payload
-async fn generate_invoice_from_confirmation(
-    confirmation: &AgentConfirmation,
-) -> anyhow::Result<GatewayMessageResponse> {
-    use crate::invoice::{InvoiceData, InvoiceItem, generate_invoice_html};
-
-    let payload = &confirmation.payload;
-
-    // Extract invoice data from payload
-    let customer_name = payload
-        .get("customer_name")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing customer_name in invoice payload"))?;
-
-    let customer_address = payload
-        .get("customer_address")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-
-    let items_json = payload
-        .get("items")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| anyhow::anyhow!("Missing items in invoice payload"))?;
-
-    let items: Vec<InvoiceItem> = items_json
-        .iter()
-        .filter_map(|item| {
-            let description = item.get("description")?.as_str()?.to_string();
-            let qty = item.get("qty")?.as_f64()?;
-            let price = item.get("price")?.as_f64()?;
-            let total = item.get("total")?.as_f64()?;
-            Some(InvoiceItem {
-                description,
-                qty,
-                price,
-                total,
-            })
-        })
-        .collect();
-
-    if items.is_empty() {
-        return Ok(GatewayMessageResponse::text(
-            "Cannot generate invoice: no valid items found.".to_string(),
-        ));
-    }
-
-    let tax_rate = payload
-        .get("tax_rate")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-
-    let due_date = payload
-        .get("due_date")
-        .and_then(|v| v.as_str())
-        .map(ToString::to_string);
-
-    let payment_terms = payload
-        .get("payment_terms")
-        .and_then(|v| v.as_str())
-        .map(ToString::to_string)
-        .unwrap_or_else(|| "Net 30".to_string());
-
-    let notes = payload
-        .get("notes")
-        .and_then(|v| v.as_str())
-        .map(ToString::to_string);
-
-    // Generate invoice number (using timestamp for uniqueness)
-    let timestamp = chrono::Utc::now().timestamp();
-    let invoice_number = format!("INV-{}", timestamp);
-
-    // Get current date formatted
-    let invoice_date = chrono::Local::now().format("%B %d, %Y").to_string();
-
-    // Build due date string
-    let due_date_str = due_date.unwrap_or_else(|| {
-        // Default to 30 days from now
-        let due = chrono::Local::now() + chrono::Duration::days(30);
-        due.format("%B %d, %Y").to_string()
-    });
-
-    // Create invoice data
-    let mut invoice_data = InvoiceData {
-        company_name: "Finelor".to_string(), // TODO: Make configurable
-        company_address: String::new(),      // Could be configured
-        invoice_number: invoice_number.clone(),
-        invoice_date: invoice_date.clone(),
-        due_date: due_date_str,
-        customer_name: customer_name.to_string(),
-        customer_address: customer_address.to_string(),
-        items,
-        subtotal: 0.0, // Will be calculated
-        tax_rate,
-        tax_amount: 0.0, // Will be calculated
-        total: 0.0,      // Will be calculated
-        payment_terms,
-        notes,
-    };
-
-    // Calculate totals
-    invoice_data.calculate_totals();
-
-    // Generate HTML invoice
-    let html_path = match generate_invoice_html(&invoice_data).await {
-        Ok(path) => path,
-        Err(e) => {
-            tracing::error!(error = %e, "Failed to generate invoice HTML");
-            return Ok(GatewayMessageResponse::text(format!(
-                "Failed to generate invoice HTML: {}",
-                e
-            )));
-        }
-    };
-
-    // Build summary message
-    let summary = format!(
-        "**Invoice Generated**\n\n\
-        Invoice #: {}\n\
-        Date: {}\n\
-        Customer: {}\n\
-        Items: {}\n\
-        Subtotal: ${:.2}\n\
-        Tax ({}%): ${:.2}\n\
-        **Total: ${:.2}**\n\n\
-        The invoice HTML file is attached.",
-        invoice_number,
-        invoice_date,
-        customer_name,
-        invoice_data.items.len(),
-        invoice_data.subtotal,
-        tax_rate,
-        invoice_data.tax_amount,
-        invoice_data.total
-    );
-
-    Ok(GatewayMessageResponse {
-        message: summary,
-        format: crate::messaging::contracts::GatewayMessageFormat::Markdown,
-        attachments: vec![GatewayAttachment::LocalFile { path: html_path }],
-        buttons: None,
-    })
 }
 
 fn slash_route(resolution: &GatewayIntentResolution) -> SlashRoute {
@@ -1561,46 +1258,5 @@ mod tests {
         assert_eq!(args.date_to.as_deref(), Some("2026-01-31"));
         assert_eq!(args.document_types, Some(vec!["INVOICE".to_string()]));
         assert_eq!(args.confidence_min, Some(0.75));
-    }
-
-    #[tokio::test]
-    async fn generate_invoice_confirmation_returns_local_html_attachment() {
-        let confirmation = AgentConfirmation {
-            id: "invoice-confirmation".to_string(),
-            workspace_id: Uuid::new_v4(),
-            document_id: None,
-            channel_type: "TELEGRAM".to_string(),
-            channel_identifier: "chat".to_string(),
-            profile_identifier: Some("user".to_string()),
-            action_kind: AgentConfirmationActionKind::GenerateInvoice,
-            payload: json!({
-                "customer_name": "Acme Corp",
-                "customer_address": "123 Main St\nStockholm",
-                "items": [{
-                    "description": "Consulting",
-                    "qty": 2.0,
-                    "price": 150.0,
-                    "total": 300.0
-                }],
-                "tax_rate": 25.0,
-                "payment_terms": "Net 30"
-            }),
-            expires_at: chrono::Utc::now().timestamp() + 60,
-        };
-
-        let response = generate_invoice_from_confirmation(&confirmation)
-            .await
-            .expect("invoice confirmation should succeed");
-
-        assert!(response.message.contains("Invoice Generated"));
-        assert!(response.message.contains("HTML file is attached"));
-        assert_eq!(response.attachments.len(), 1);
-        match &response.attachments[0] {
-            GatewayAttachment::LocalFile { path } => {
-                assert_eq!(path.extension().and_then(|ext| ext.to_str()), Some("html"));
-                let _ = tokio::fs::remove_file(path).await;
-            }
-            other => panic!("expected LocalFile attachment, got {other:?}"),
-        }
     }
 }

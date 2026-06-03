@@ -35,10 +35,10 @@ pub struct AccountingContextSnapshot {
     pub export_ready_documents: Vec<DocumentSummary>,
 }
 
-pub fn assemble_chat_messages(input: PromptAssemblyInput<'_>) -> Vec<ChatMessage> {
+pub async fn assemble_chat_messages(input: PromptAssemblyInput<'_>) -> Vec<ChatMessage> {
     let mut messages = vec![ChatMessage {
         role: "system".to_string(),
-        content: assemble_system_prompt(&input),
+        content: assemble_system_prompt(&input).await,
     }];
 
     if let Some(context) = input.conversation_context.as_ref() {
@@ -56,7 +56,7 @@ pub fn assemble_chat_messages(input: PromptAssemblyInput<'_>) -> Vec<ChatMessage
     messages
 }
 
-fn assemble_system_prompt(input: &PromptAssemblyInput<'_>) -> String {
+async fn assemble_system_prompt(input: &PromptAssemblyInput<'_>) -> String {
     let soul = load_agent_soul(input.config);
     let platform = input.source.channel.as_str();
     let profile = input
@@ -79,7 +79,7 @@ fn assemble_system_prompt(input: &PromptAssemblyInput<'_>) -> String {
 
     // Load and format skills context
     let skills_context = if let Some(registry) = input.skills_registry.as_ref() {
-        format_skills_context(registry)
+        format_skills_context(registry).await
     } else {
         "No skills registry available.".to_string()
     };
@@ -150,49 +150,21 @@ fn format_conversation_context(context: &ConversationContext) -> String {
 }
 
 /// Format the skills context for the system prompt.
-/// This is an async function that loads skills at prompt assembly time.
 /// Includes lazy initialization to ensure skills are available even if the
 /// registry was not initialized during startup.
-fn format_skills_context(registry: &SkillRegistry) -> String {
-    // Create a Tokio runtime for blocking operation
-    // Since this is called synchronously from the prompt assembly function,
-    // we need to handle the async skill registry operations
-    let rt = match tokio::runtime::Handle::try_current() {
-        Ok(handle) => {
-            // We're already in a tokio runtime, block on it
-            tokio::task::block_in_place(|| {
-                handle.block_on(async move {
-                    // Lazy initialization: ensure registry is populated
-                    if registry.is_empty().await {
-                        tracing::debug!("Skills registry is empty at prompt assembly time, attempting lazy initialization");
-                        if let Err(e) = registry.initialize().await {
-                            tracing::error!(error = %e, "Failed to lazily initialize skills registry");
-                        } else {
-                            tracing::info!("Skills registry lazily initialized successfully");
-                        }
-                    }
-                    build_skills_context(registry).await
-                })
-            })
+async fn format_skills_context(registry: &SkillRegistry) -> String {
+    if registry.is_empty().await {
+        tracing::debug!(
+            "Skills registry is empty at prompt assembly time, attempting lazy initialization"
+        );
+        if let Err(e) = registry.initialize().await {
+            tracing::error!(error = %e, "Failed to lazily initialize skills registry");
+        } else {
+            tracing::info!("Skills registry lazily initialized successfully");
         }
-        Err(_) => {
-            // No tokio runtime, create a temporary one
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(async move {
-                // Lazy initialization: ensure registry is populated
-                if registry.is_empty().await {
-                    tracing::debug!("Skills registry is empty at prompt assembly time, attempting lazy initialization");
-                    if let Err(e) = registry.initialize().await {
-                        tracing::error!(error = %e, "Failed to lazily initialize skills registry");
-                    } else {
-                        tracing::info!("Skills registry lazily initialized successfully");
-                    }
-                }
-                build_skills_context(registry).await
-            })
-        }
-    };
-    rt
+    }
+
+    build_skills_context(registry).await
 }
 
 async fn build_skills_context(registry: &SkillRegistry) -> String {
@@ -208,8 +180,10 @@ async fn build_skills_context(registry: &SkillRegistry) -> String {
         lines.push(format!("- {}: {}", skill.name(), skill.description()));
     }
     lines.push(String::new());
-    lines
-        .push("To use a skill, reference it by name or use the /skill <name> command.".to_string());
+    lines.push(
+        "To use a skill, ask about it by name so the assistant can load the relevant instructions."
+            .to_string(),
+    );
 
     lines.join("\n")
 }
@@ -314,7 +288,9 @@ fn load_agent_soul(config: &AppConfig) -> String {
 mod tests {
     use serde_json::json;
     use std::fs;
+    use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
+    use tempfile::TempDir;
 
     use super::*;
     use crate::config::{
@@ -325,9 +301,20 @@ mod tests {
     use crate::db::ChannelType;
     use crate::messaging::conversation::{ConversationMessage, ConversationReferents};
     use crate::query::{DocumentStatusCounts, WorkspaceProfile};
+    use crate::skills::SkillRegistry;
 
-    #[test]
-    fn prompt_assembly_includes_soul_and_runtime_context() {
+    fn create_temp_skill_root() -> TempDir {
+        tempfile::tempdir().expect("tempdir")
+    }
+
+    fn write_skill_fixture(root: &std::path::Path, skill_dir_name: &str, skill_md: &str) {
+        let skill_dir = root.join(skill_dir_name);
+        fs::create_dir_all(&skill_dir).expect("create skill dir");
+        fs::write(skill_dir.join("SKILL.md"), skill_md).expect("write SKILL.md");
+    }
+
+    #[tokio::test]
+    async fn prompt_assembly_includes_soul_and_runtime_context() {
         let config = test_config();
         let workspace_id = Uuid::parse_str("37fd57d2-51d9-42a3-9bda-8d01f9ad03e1").unwrap();
         let source = MessageSource {
@@ -348,7 +335,8 @@ mod tests {
             accounting_context: None,
             conversation_context: None,
             skills_registry: None,
-        });
+        })
+        .await;
 
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role, "system");
@@ -393,8 +381,8 @@ mod tests {
         assert_eq!(messages[1].content, "Hello");
     }
 
-    #[test]
-    fn prompt_assembly_includes_company_accounting_snapshot() {
+    #[tokio::test]
+    async fn prompt_assembly_includes_company_accounting_snapshot() {
         let config = test_config();
         let workspace_id = Uuid::parse_str("37fd57d2-51d9-42a3-9bda-8d01f9ad03e1").unwrap();
         let source = MessageSource {
@@ -432,7 +420,8 @@ mod tests {
             accounting_context: Some(snapshot),
             conversation_context: None,
             skills_registry: None,
-        });
+        })
+        .await;
 
         let system = &messages[0].content;
         assert!(system.contains("Snapshot scope: this workspace only."));
@@ -447,8 +436,8 @@ mod tests {
         assert!(system.contains("Use total_count, not returned_count"));
     }
 
-    #[test]
-    fn prompt_assembly_includes_recent_session_context() {
+    #[tokio::test]
+    async fn prompt_assembly_includes_recent_session_context() {
         let config = test_config();
         let workspace_id = Uuid::parse_str("37fd57d2-51d9-42a3-9bda-8d01f9ad03e1").unwrap();
         let source = MessageSource {
@@ -488,7 +477,8 @@ mod tests {
             accounting_context: None,
             conversation_context: Some(conversation_context),
             skills_registry: None,
-        });
+        })
+        .await;
 
         assert_eq!(messages.len(), 4);
         assert!(messages[0].content.contains("Latest ordered document refs"));
@@ -507,6 +497,113 @@ mod tests {
         assert_eq!(messages[3].content, "Why the first one?");
     }
 
+    #[tokio::test]
+    async fn prompt_assembly_reports_empty_skills_registry() {
+        let config = test_config();
+        let source = test_source();
+        let root = create_temp_skill_root();
+        let registry = Arc::new(SkillRegistry::with_dir(root.path()));
+        registry.initialize().await.expect("initialize registry");
+
+        let messages = assemble_chat_messages(PromptAssemblyInput {
+            config: &config,
+            workspace_id: Uuid::parse_str("37fd57d2-51d9-42a3-9bda-8d01f9ad03e1").unwrap(),
+            session_key: "agent:main:telegram:private:12345",
+            source: &source,
+            text: "What skills do you have?",
+            accounting_context: None,
+            conversation_context: None,
+            skills_registry: Some(registry),
+        })
+        .await;
+
+        assert!(
+            messages[0]
+                .content
+                .contains("No skills are currently loaded.")
+        );
+    }
+
+    #[tokio::test]
+    async fn prompt_assembly_lists_loaded_skills() {
+        let config = test_config();
+        let source = test_source();
+        let root = create_temp_skill_root();
+        write_skill_fixture(
+            root.path(),
+            "invoice-helper",
+            r#"---
+name: Invoice Helper
+description: Helps with structured invoice workflows
+category: accounting
+---
+# Invoice Helper
+
+## Overview
+
+Useful overview.
+"#,
+        );
+        let registry = Arc::new(SkillRegistry::with_dir(root.path()));
+        registry.initialize().await.expect("initialize registry");
+
+        let messages = assemble_chat_messages(PromptAssemblyInput {
+            config: &config,
+            workspace_id: Uuid::parse_str("37fd57d2-51d9-42a3-9bda-8d01f9ad03e1").unwrap(),
+            session_key: "agent:main:telegram:private:12345",
+            source: &source,
+            text: "Show me the available skills",
+            accounting_context: None,
+            conversation_context: None,
+            skills_registry: Some(registry),
+        })
+        .await;
+
+        let system = &messages[0].content;
+        assert!(system.contains("# Available Skills"));
+        assert!(system.contains("Invoice Helper"));
+        assert!(system.contains("Helps with structured invoice workflows"));
+        assert!(system.contains("To use a skill, ask about it by name"));
+    }
+
+    #[tokio::test]
+    async fn prompt_assembly_lazily_initializes_skills_registry() {
+        let config = test_config();
+        let source = test_source();
+        let root = create_temp_skill_root();
+        write_skill_fixture(
+            root.path(),
+            "review-helper",
+            r#"---
+name: Review Helper
+description: Helps with review workflows
+category: operations
+---
+# Review Helper
+
+## Overview
+
+Useful overview.
+"#,
+        );
+        let registry = Arc::new(SkillRegistry::with_dir(root.path()));
+
+        let messages = assemble_chat_messages(PromptAssemblyInput {
+            config: &config,
+            workspace_id: Uuid::parse_str("37fd57d2-51d9-42a3-9bda-8d01f9ad03e1").unwrap(),
+            session_key: "agent:main:telegram:private:12345",
+            source: &source,
+            text: "What can you do?",
+            accounting_context: None,
+            conversation_context: None,
+            skills_registry: Some(registry),
+        })
+        .await;
+
+        assert!(messages[0].content.contains("Review Helper"));
+        assert!(messages[0].content.contains("Helps with review workflows"));
+    }
+
     fn document_summary(short_ref: &str, status: &str) -> DocumentSummary {
         DocumentSummary {
             id: 1,
@@ -517,6 +614,17 @@ mod tests {
             total_amount: Some("1250.00".to_string()),
             confidence_score: Some(0.92),
             review_reason: Some("Needs VAT check".to_string()),
+        }
+    }
+
+    fn test_source() -> MessageSource {
+        MessageSource {
+            channel: ChannelType::Telegram,
+            channel_identifier: "12345".to_string(),
+            profile_identifier: Some("67890".to_string()),
+            message_id: Some("44".to_string()),
+            source_timestamp: None,
+            metadata: json!({ "chat_type": "private" }),
         }
     }
 

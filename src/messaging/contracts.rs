@@ -150,11 +150,6 @@ pub enum GatewayAttachment {
         mime_type: String,
         filename: Option<String>,
     },
-    Bytes {
-        filename: String,
-        mime_type: String,
-        data: Vec<u8>,
-    },
 }
 
 impl GatewayMessageResponse {

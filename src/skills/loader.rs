@@ -450,6 +450,40 @@ impl Default for SkillLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn write_skill_fixture(
+        root: &std::path::Path,
+        skill_dir_name: &str,
+        skill_md: &str,
+        references: &[(&str, &str)],
+        templates: &[(&str, &str)],
+    ) {
+        let skill_dir = root.join(skill_dir_name);
+        fs::create_dir_all(&skill_dir).expect("create skill dir");
+        fs::write(skill_dir.join("SKILL.md"), skill_md).expect("write SKILL.md");
+
+        if !references.is_empty() {
+            let references_dir = skill_dir.join("references");
+            fs::create_dir_all(&references_dir).expect("create references dir");
+            for (name, content) in references {
+                fs::write(references_dir.join(name), content).expect("write reference");
+            }
+        }
+
+        if !templates.is_empty() {
+            let templates_dir = skill_dir.join("templates");
+            fs::create_dir_all(&templates_dir).expect("create templates dir");
+            for (name, content) in templates {
+                fs::write(templates_dir.join(name), content).expect("write template");
+            }
+        }
+    }
+
+    fn create_temp_skill_root() -> TempDir {
+        tempfile::tempdir().expect("tempdir")
+    }
 
     #[test]
     fn test_split_frontmatter() {
@@ -514,5 +548,233 @@ Custom content."#;
         assert_eq!(sections.when_to_use, "content1");
         assert_eq!(sections.when_not_to_use, "content2");
         assert_eq!(extra.get("Unknown Section").unwrap(), "content3");
+    }
+
+    #[tokio::test]
+    async fn load_skill_reads_complete_skill_with_references_and_templates() {
+        let root = create_temp_skill_root();
+        write_skill_fixture(
+            root.path(),
+            "invoice-helper",
+            r#"---
+name: Invoice Helper
+description: Helps prepare invoices
+category: accounting
+version: "1.0.0"
+author: Finelor
+keywords:
+  - invoices
+  - billing
+depends_on:
+  - core-skill
+file_extensions:
+  - pdf
+file_globs:
+  - "*.pdf"
+---
+# Invoice Helper
+
+## Overview
+
+Create invoices carefully.
+
+## Workflow
+
+1. Ask questions
+2. Confirm the result
+
+## Examples
+
+Example content.
+"#,
+            &[("usage.md", "# Usage\n\nUse responsibly.")],
+            &[(
+                "invoice.html",
+                "<!-- description: Invoice HTML template -->\n<html></html>",
+            )],
+        );
+
+        let loader = SkillLoader::with_dir(root.path());
+        let skill = loader.load_skill("invoice-helper").await.expect("skill");
+
+        assert_eq!(skill.id.0, "invoice-helper");
+        assert_eq!(skill.metadata.name, "Invoice Helper");
+        assert_eq!(skill.metadata.description, "Helps prepare invoices");
+        assert_eq!(skill.metadata.category, "accounting");
+        assert_eq!(skill.metadata.version.as_deref(), Some("1.0.0"));
+        assert_eq!(skill.metadata.author.as_deref(), Some("Finelor"));
+        assert_eq!(
+            skill.metadata.keywords.as_ref().expect("keywords"),
+            &vec!["invoices".to_string(), "billing".to_string()]
+        );
+        assert_eq!(
+            skill.metadata.depends_on.as_ref().expect("depends_on"),
+            &vec!["core-skill".to_string()]
+        );
+        assert_eq!(
+            skill.metadata.file_extensions.as_ref().expect("extensions"),
+            &vec!["pdf".to_string()]
+        );
+        assert_eq!(
+            skill.metadata.file_globs.as_ref().expect("globs"),
+            &vec!["*.pdf".to_string()]
+        );
+        assert_eq!(skill.sections.overview, "Create invoices carefully.");
+        assert!(skill.sections.workflow.contains("Ask questions"));
+        assert_eq!(skill.references.len(), 1);
+        assert_eq!(skill.references[0].filename, "usage.md");
+        assert!(skill.references[0].content.contains("Use responsibly"));
+        assert_eq!(skill.templates.len(), 1);
+        assert_eq!(skill.templates[0].name, "invoice.html");
+        assert_eq!(
+            skill.templates[0].description.as_deref(),
+            Some("Invoice HTML template")
+        );
+        assert!(skill.templates[0].content.contains("<html>"));
+    }
+
+    #[tokio::test]
+    async fn load_skill_fails_when_skill_md_missing() {
+        let root = create_temp_skill_root();
+        fs::create_dir_all(root.path().join("missing-skill")).expect("create skill dir");
+
+        let loader = SkillLoader::with_dir(root.path());
+        let err = loader
+            .load_skill("missing-skill")
+            .await
+            .expect_err("missing SKILL.md should fail");
+
+        assert!(matches!(err, SkillError::NotFound(_)));
+        assert!(err.to_string().contains("SKILL.md not found"));
+    }
+
+    #[tokio::test]
+    async fn load_skill_fails_on_empty_frontmatter() {
+        let root = create_temp_skill_root();
+        write_skill_fixture(
+            root.path(),
+            "empty-frontmatter",
+            "---\n---\n# Empty\n",
+            &[],
+            &[],
+        );
+
+        let loader = SkillLoader::with_dir(root.path());
+        let err = loader
+            .load_skill("empty-frontmatter")
+            .await
+            .expect_err("empty frontmatter should fail");
+
+        assert!(matches!(err, SkillError::InvalidFrontmatter(_)));
+        assert!(err.to_string().contains("Empty YAML frontmatter"));
+    }
+
+    #[tokio::test]
+    async fn load_skill_fails_on_missing_required_frontmatter_fields() {
+        let root = create_temp_skill_root();
+        write_skill_fixture(
+            root.path(),
+            "missing-fields",
+            r#"---
+name: Missing Fields
+description: Missing category
+---
+# Missing fields
+"#,
+            &[],
+            &[],
+        );
+
+        let loader = SkillLoader::with_dir(root.path());
+        let err = loader
+            .load_skill("missing-fields")
+            .await
+            .expect_err("missing category should fail");
+
+        assert!(matches!(err, SkillError::InvalidFrontmatter(_)));
+        assert!(err.to_string().contains("Missing required field: category"));
+    }
+
+    #[tokio::test]
+    async fn load_skill_fails_on_malformed_yaml() {
+        let root = create_temp_skill_root();
+        write_skill_fixture(
+            root.path(),
+            "bad-yaml",
+            r#"---
+name: Broken
+description: Broken YAML
+category: [oops
+---
+# Broken
+"#,
+            &[],
+            &[],
+        );
+
+        let loader = SkillLoader::with_dir(root.path());
+        let err = loader
+            .load_skill("bad-yaml")
+            .await
+            .expect_err("malformed YAML should fail");
+
+        assert!(matches!(err, SkillError::InvalidFrontmatter(_)));
+    }
+
+    #[tokio::test]
+    async fn load_all_creates_missing_dir_and_returns_empty() {
+        let root = create_temp_skill_root();
+        let missing = root.path().join("nested-skills-dir");
+        let loader = SkillLoader::with_dir(&missing);
+
+        let skills = loader.load_all().await.expect("load all");
+
+        assert!(skills.is_empty());
+        assert!(missing.exists());
+        assert!(missing.is_dir());
+    }
+
+    #[tokio::test]
+    async fn load_all_returns_only_valid_skills_from_mixed_directory() {
+        let root = create_temp_skill_root();
+
+        write_skill_fixture(
+            root.path(),
+            "valid-skill",
+            r#"---
+name: Valid Skill
+description: This one should load
+category: generic
+---
+# Valid
+
+## Overview
+
+Loaded successfully.
+"#,
+            &[],
+            &[],
+        );
+
+        fs::create_dir_all(root.path().join("missing-markdown")).expect("create invalid dir");
+        write_skill_fixture(
+            root.path(),
+            "bad-frontmatter",
+            r#"---
+name: Invalid Skill
+description: Missing category
+---
+# Invalid
+"#,
+            &[],
+            &[],
+        );
+
+        let loader = SkillLoader::with_dir(root.path());
+        let skills = loader.load_all().await.expect("load all");
+
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].id.0, "valid-skill");
+        assert_eq!(skills[0].metadata.name, "Valid Skill");
     }
 }

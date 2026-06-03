@@ -16,7 +16,7 @@ RUN set -eux; \
       *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
     esac; \
     LEPTOS_VERSION=v0.3.6; \
-    WASM_BINDGEN_VERSION=0.2.122; \
+    WASM_BINDGEN_VERSION=0.2.118; \
     curl --fail --show-error --location \
       --output "/tmp/cargo-leptos-${LEPTOS_TRIPLE}.tar.gz" \
       "https://github.com/leptos-rs/cargo-leptos/releases/download/${LEPTOS_VERSION}/cargo-leptos-${LEPTOS_TRIPLE}.tar.gz"; \
@@ -67,11 +67,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/root/.cache/cargo-leptos \
     cargo leptos build
 
-FROM debian:trixie-slim AS runtime
+FROM debian:bookworm-slim AS runtime
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates wget chromium \
+    && apt-get install -y --no-install-recommends ca-certificates wget \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/debug/finelor /usr/local/bin/finelor

@@ -177,36 +177,6 @@ pub fn mutating_prepare_tool_catalog() -> Vec<AppToolDefinition> {
                 "additionalProperties": false
             }),
         },
-        AppToolDefinition {
-            name: "prepare_generate_invoice",
-            description: "Prepare a confirmation prompt to generate an invoice PDF. Use when the user has provided all necessary invoice details (customer name, items, amounts) and wants to create the invoice.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "customer_name": { "type": "string", "description": "Customer or company name" },
-                    "customer_address": { "type": "string", "description": "Customer address (can be multi-line)" },
-                    "customer_email": { "type": "string", "description": "Customer email address" },
-                    "items": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "description": { "type": "string" },
-                                "qty": { "type": "number" },
-                                "price": { "type": "number" }
-                            },
-                            "required": ["description", "qty", "price"]
-                        }
-                    },
-                    "tax_rate": { "type": "number", "description": "Tax rate as percentage (e.g., 25 for 25%)" },
-                    "due_date": { "type": "string", "description": "Due date in ISO format or relative like '30 days'" },
-                    "payment_terms": { "type": "string", "description": "Payment terms like 'Net 30'" },
-                    "notes": { "type": "string", "description": "Optional notes for the invoice" }
-                },
-                "required": ["customer_name", "items"],
-                "additionalProperties": false
-            }),
-        },
     ]
 }
 
@@ -221,10 +191,7 @@ pub fn agent_inference_tools() -> Vec<InferenceToolDefinition> {
 pub fn is_mutating_prepare_tool(name: &str) -> bool {
     matches!(
         name,
-        "prepare_open_review"
-            | "prepare_retry_document"
-            | "prepare_export_documents"
-            | "prepare_generate_invoice"
+        "prepare_open_review" | "prepare_retry_document" | "prepare_export_documents"
     )
 }
 
@@ -289,15 +256,9 @@ async fn execute_read_only_tool_inner(
         }
         "skill_view" => {
             let name = required_skill_name(&tool_call.args)?;
-            let loader = SkillLoader::new();
-            let skill = loader.load_skill(&name).await?;
-            Ok(skill_view_result(&skill))
+            read_skill_view_with_loader(&SkillLoader::new(), &name).await
         }
-        "skill_list" => {
-            let loader = SkillLoader::new();
-            let skills = loader.load_all().await?;
-            Ok(skill_list_result(&skills))
-        }
+        "skill_list" => read_skill_list_with_loader(&SkillLoader::new()).await,
         other => Err(anyhow::anyhow!("unknown read-only tool: {other}")),
     }
 }
@@ -353,6 +314,19 @@ fn required_skill_name(args: &serde_json::Value) -> anyhow::Result<String> {
         .and_then(|value| value.as_str())
         .ok_or_else(|| anyhow::anyhow!("missing required skill name"))
         .map(|s| s.to_string())
+}
+
+async fn read_skill_view_with_loader(
+    loader: &SkillLoader,
+    name: &str,
+) -> anyhow::Result<serde_json::Value> {
+    let skill = loader.load_skill(name).await?;
+    Ok(skill_view_result(&skill))
+}
+
+async fn read_skill_list_with_loader(loader: &SkillLoader) -> anyhow::Result<serde_json::Value> {
+    let skills = loader.load_all().await?;
+    Ok(skill_list_result(&skills))
 }
 
 fn skill_view_result(skill: &crate::skills::types::Skill) -> serde_json::Value {
@@ -419,6 +393,40 @@ fn normalize_tool_arguments(args: &serde_json::Value) -> anyhow::Result<serde_js
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn create_temp_skill_root() -> TempDir {
+        tempfile::tempdir().expect("tempdir")
+    }
+
+    fn write_skill_fixture(
+        root: &std::path::Path,
+        skill_dir_name: &str,
+        skill_md: &str,
+        references: &[(&str, &str)],
+        templates: &[(&str, &str)],
+    ) {
+        let skill_dir = root.join(skill_dir_name);
+        fs::create_dir_all(&skill_dir).expect("create skill dir");
+        fs::write(skill_dir.join("SKILL.md"), skill_md).expect("write SKILL.md");
+
+        if !references.is_empty() {
+            let references_dir = skill_dir.join("references");
+            fs::create_dir_all(&references_dir).expect("create references dir");
+            for (name, content) in references {
+                fs::write(references_dir.join(name), content).expect("write reference");
+            }
+        }
+
+        if !templates.is_empty() {
+            let templates_dir = skill_dir.join("templates");
+            fs::create_dir_all(&templates_dir).expect("create templates dir");
+            for (name, content) in templates {
+                fs::write(templates_dir.join(name), content).expect("write template");
+            }
+        }
+    }
 
     #[test]
     fn converts_native_ollama_tool_call() {
@@ -546,5 +554,111 @@ mod tests {
         let tool_call = ReadOnlyToolCall::try_from(&native).expect("tool call");
 
         assert_eq!(tool_call.args, json!({ "short_ref": "D57" }));
+    }
+
+    #[tokio::test]
+    async fn skill_list_returns_loaded_skill_metadata() {
+        let root = create_temp_skill_root();
+        write_skill_fixture(
+            root.path(),
+            "invoice-helper",
+            r#"---
+name: Invoice Helper
+description: Helps with invoices
+category: accounting
+version: "1.0.0"
+---
+# Invoice Helper
+
+## Overview
+
+Useful overview.
+"#,
+            &[],
+            &[],
+        );
+        let loader = SkillLoader::with_dir(root.path());
+
+        let value = read_skill_list_with_loader(&loader)
+            .await
+            .expect("skill list should load");
+
+        assert_eq!(value["total_count"], 1);
+        assert_eq!(value["items"][0]["id"], "invoice-helper");
+        assert_eq!(value["items"][0]["name"], "Invoice Helper");
+        assert_eq!(value["items"][0]["description"], "Helps with invoices");
+        assert_eq!(value["items"][0]["category"], "accounting");
+        assert_eq!(value["items"][0]["version"], "1.0.0");
+    }
+
+    #[tokio::test]
+    async fn skill_view_returns_expected_content() {
+        let root = create_temp_skill_root();
+        write_skill_fixture(
+            root.path(),
+            "invoice-helper",
+            r#"---
+name: Invoice Helper
+description: Helps with invoices
+category: accounting
+keywords:
+  - invoices
+---
+# Invoice Helper
+
+## Overview
+
+Useful overview.
+
+## Workflow
+
+1. Ask questions
+2. Confirm
+"#,
+            &[("usage.md", "# Usage\n\nFollow the process.")],
+            &[(
+                "invoice.html",
+                "<!-- description: Invoice template -->\n<html></html>",
+            )],
+        );
+        let loader = SkillLoader::with_dir(root.path());
+
+        let value = read_skill_view_with_loader(&loader, "invoice-helper")
+            .await
+            .expect("skill view should load");
+
+        assert_eq!(value["id"], "invoice-helper");
+        assert_eq!(value["name"], "Invoice Helper");
+        assert_eq!(value["description"], "Helps with invoices");
+        assert_eq!(value["category"], "accounting");
+        assert_eq!(value["keywords"][0], "invoices");
+        assert_eq!(value["references"][0]["filename"], "usage.md");
+        assert_eq!(value["templates"][0]["name"], "invoice.html");
+        assert_eq!(value["templates"][0]["description"], "Invoice template");
+        assert_eq!(value["sections"]["overview"], "Useful overview.");
+        assert!(
+            value["sections"]["workflow"]
+                .as_str()
+                .expect("workflow")
+                .contains("Ask questions")
+        );
+    }
+
+    #[test]
+    fn skill_view_errors_for_missing_name_argument() {
+        let err = required_skill_name(&json!({})).expect_err("missing name should fail");
+        assert!(err.to_string().contains("missing required skill name"));
+    }
+
+    #[tokio::test]
+    async fn skill_view_errors_for_unknown_skill_name() {
+        let root = create_temp_skill_root();
+        let loader = SkillLoader::with_dir(root.path());
+
+        let err = read_skill_view_with_loader(&loader, "missing-skill")
+            .await
+            .expect_err("unknown skill should fail");
+
+        assert!(err.to_string().contains("missing-skill"));
     }
 }

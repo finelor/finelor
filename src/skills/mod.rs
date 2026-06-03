@@ -5,7 +5,7 @@
 //!
 //! ## Directory Structure
 //!
-//! ```
+//! ```text
 //! assets/skills/
 //! └── <skill-name>/
 //!     ├── SKILL.md          # Main skill file with YAML frontmatter
