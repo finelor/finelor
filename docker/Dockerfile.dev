@@ -11,12 +11,11 @@ RUN rustup target add wasm32-unknown-unknown
 ARG TARGETARCH
 RUN set -eux; \
     case "$TARGETARCH" in \
-      amd64) LEPTOS_TRIPLE=x86_64-unknown-linux-gnu; WASM_TRIPLE=x86_64-unknown-linux-musl ;; \
-      arm64) LEPTOS_TRIPLE=aarch64-unknown-linux-gnu; WASM_TRIPLE=aarch64-unknown-linux-musl ;; \
+      amd64) LEPTOS_TRIPLE=x86_64-unknown-linux-gnu ;; \
+      arm64) LEPTOS_TRIPLE=aarch64-unknown-linux-gnu ;; \
       *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
     esac; \
     LEPTOS_VERSION=v0.3.6; \
-    WASM_BINDGEN_VERSION=0.2.122; \
     curl --fail --show-error --location \
       --output "/tmp/cargo-leptos-${LEPTOS_TRIPLE}.tar.gz" \
       "https://github.com/leptos-rs/cargo-leptos/releases/download/${LEPTOS_VERSION}/cargo-leptos-${LEPTOS_TRIPLE}.tar.gz"; \
@@ -27,17 +26,7 @@ RUN set -eux; \
     sha256sum --check "cargo-leptos-${LEPTOS_TRIPLE}.tar.gz.sha256"; \
     tar -xzf "cargo-leptos-${LEPTOS_TRIPLE}.tar.gz"; \
     install -m 0755 "cargo-leptos-${LEPTOS_TRIPLE}/cargo-leptos" /usr/local/bin/cargo-leptos; \
-    rm -rf /tmp/cargo-leptos*; \
-    curl --fail --show-error --location \
-      --output "/tmp/wasm-bindgen-${WASM_BINDGEN_VERSION}-${WASM_TRIPLE}.tar.gz" \
-      "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${WASM_BINDGEN_VERSION}/wasm-bindgen-${WASM_BINDGEN_VERSION}-${WASM_TRIPLE}.tar.gz"; \
-    curl --fail --show-error --location \
-      --output "/tmp/wasm-bindgen-${WASM_BINDGEN_VERSION}-${WASM_TRIPLE}.tar.gz.sha256sum" \
-      "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${WASM_BINDGEN_VERSION}/wasm-bindgen-${WASM_BINDGEN_VERSION}-${WASM_TRIPLE}.tar.gz.sha256sum"; \
-    printf "%s  %s\n" "$(cut -d ' ' -f 1 "wasm-bindgen-${WASM_BINDGEN_VERSION}-${WASM_TRIPLE}.tar.gz.sha256sum")" "wasm-bindgen-${WASM_BINDGEN_VERSION}-${WASM_TRIPLE}.tar.gz" | sha256sum --check -; \
-    tar -xzf "wasm-bindgen-${WASM_BINDGEN_VERSION}-${WASM_TRIPLE}.tar.gz"; \
-    install -m 0755 "wasm-bindgen-${WASM_BINDGEN_VERSION}-${WASM_TRIPLE}/wasm-bindgen" /usr/local/bin/wasm-bindgen; \
-    rm -rf /tmp/wasm-bindgen*
+    rm -rf /tmp/cargo-leptos*
 
 FROM chef AS planner
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
