@@ -33,12 +33,12 @@ https://raw.githubusercontent.com/finelor/finelor/main/deploy/hostinger/docker-c
 2. Create a Hostinger account or sign in.
 3. Choose a Docker VPS plan and complete checkout.
 4. Wait for Hostinger to finish setting up the VPS.
-5. Open the VPS in Hostinger.
+5. Open the VPS settings in Hostinger.
 6. Open Docker Manager.
 7. Deploy the Finelor project if it is ready.
-8. Continue with the values below.
+8. Before deploying, continue with the entering the environment values below.
 
-## If Finelor Is Not Loaded Automatically
+### If Finelor Is Not Loaded Automatically
 
 If Hostinger does not finish the setup automatically, finish the VPS setup yourself first:
 
@@ -51,9 +51,9 @@ If Hostinger does not finish the setup automatically, finish the VPS setup yours
 7. Click `Compose`.
 8. Choose `Compose from URL`.
 9. Paste the Compose URL from this guide.
-10. Continue with the values below.
+10. Before deploying, continue with the entering the environment values below.
 
-## Values to Enter
+## Set Environment Variables
 
 Always set:
 
