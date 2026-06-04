@@ -12,9 +12,13 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends pkg-config ca-certificates wget \
     && rm -rf /var/lib/apt/lists/*
 
+# Install cargo-binstall, which makes it easier to install other cargo extensions like cargo-leptos
+RUN wget https://github.com/cargo-bins/cargo-binstall/releases/latest/download/cargo-binstall-x86_64-unknown-linux-musl.tgz \
+  && tar -xvf cargo-binstall-x86_64-unknown-linux-musl.tgz \
+  && cp cargo-binstall /usr/local/cargo/bin
+
 # Install the WASM target and the cargo-leptos subcommand.
 RUN rustup target add wasm32-unknown-unknown \
-    && cargo install cargo-binstall \
     && cargo binstall cargo-leptos -y
 
 COPY . .
