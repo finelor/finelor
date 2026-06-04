@@ -4,13 +4,7 @@ on:
   pull_request:
     branches:
       - main
-  push:
-    branches:
-      - main
   workflow_dispatch:
-  merge_group:
-    types:
-      - checks_required
 
 jobs:
   check:
@@ -32,19 +26,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ripgrep
-          wget https://github.com/cargo-bins/cargo-binstall/releases/latest/download/cargo-binstall-x86_64-unknown-linux-musl.tgz
-          tar -xvf cargo-binstall-x86_64-unknown-linux-musl.tgz
-          mkdir -p "$HOME/.cargo/bin"
-          cp cargo-binstall "$HOME/.cargo/bin/cargo-binstall"
-          export PATH="$HOME/.cargo/bin:$PATH"
-          rustup target add wasm32-unknown-unknown
-          cargo binstall cargo-leptos -y
-
-      - name: App Build (make build-release)
-        run: make build-release
+          make bootstrap-local
 
       - name: Baseline Checks (make check)
         run: make check
+
+      - name: App Build (make build-release)
+        run: make build-release
 
       - name: Docs Check
         run: make docs-check
