@@ -221,7 +221,8 @@ impl AgentGatewayState {
         let allow_mutating_tools = matches!(directive, AgentTurnDirective::Freeform);
         let mut metadata = AgentTurnMetadata::from_user_text(text);
         if let AgentTurnDirective::ForcedReadOnlyTool(tool_call) = &directive {
-            let tool_result = execute_read_only_tool(&self.pool, tool_call).await;
+            let tool_result =
+                execute_read_only_tool(&self.pool, Some(&self.skills_registry), tool_call).await;
             metadata.note_tool_call(&tool_call.name, &tool_call.args);
             metadata.note_tool_result(&tool_call.name, &tool_result);
             tracing::info!(
@@ -337,7 +338,9 @@ impl AgentGatewayState {
                         iteration = tool_call_index,
                         "Read-only tool requested"
                     );
-                    let tool_result = execute_read_only_tool(&self.pool, &tool_call).await;
+                    let tool_result =
+                        execute_read_only_tool(&self.pool, Some(&self.skills_registry), &tool_call)
+                            .await;
                     metadata.note_tool_result(&tool_call.name, &tool_result);
                     tracing::info!(
                         tool = tool_call.name,

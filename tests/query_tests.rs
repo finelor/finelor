@@ -153,6 +153,7 @@ async fn read_only_tools_return_workspace_documents() {
 
     let pending = finelor::messaging::tools::execute_read_only_tool(
         &pool,
+        None,
         &finelor::messaging::tools::ReadOnlyToolCall {
             name: "list_pending_reviews".to_string(),
             args: serde_json::json!({ "limit": 50 }),
@@ -169,6 +170,7 @@ async fn read_only_tools_return_workspace_documents() {
 
     let get_doc = finelor::messaging::tools::execute_read_only_tool(
         &pool,
+        None,
         &finelor::messaging::tools::ReadOnlyToolCall {
             name: "get_document".to_string(),
             args: serde_json::json!({ "short_ref": pending_ref }),
@@ -180,6 +182,7 @@ async fn read_only_tools_return_workspace_documents() {
 
     let ready = finelor::messaging::tools::execute_read_only_tool(
         &pool,
+        None,
         &finelor::messaging::tools::ReadOnlyToolCall {
             name: "list_export_ready".to_string(),
             args: serde_json::json!({ "limit": 50 }),

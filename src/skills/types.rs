@@ -46,31 +46,11 @@ pub struct SkillMetadata {
     pub extra: HashMap<String, serde_yaml::Value>,
 }
 
-/// Content sections parsed from SKILL.md
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct SkillSections {
-    /// Overview/description section
-    pub overview: String,
-    /// When to use this skill
-    pub when_to_use: String,
-    /// When NOT to use this skill
-    pub when_not_to_use: String,
-    /// Workflow/instructions section
-    pub workflow: String,
-    /// Examples section
-    pub examples: String,
-    /// References section (links to external resources)
-    pub references: String,
-    /// Additional sections as key-value pairs
-    #[serde(flatten)]
-    pub extra: HashMap<String, String>,
-}
-
 /// Represents a reference file (markdown document)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillReference {
-    /// Filename (e.g., "browser-based-agent-pattern.md")
-    pub filename: String,
+    /// Reference name/filename (e.g., "browser-based-agent-pattern.md")
+    pub name: String,
     /// Full path to the reference file
     pub path: PathBuf,
     /// Content of the reference file
@@ -86,8 +66,6 @@ pub struct SkillTemplate {
     pub path: PathBuf,
     /// Template content (may contain placeholders)
     pub content: String,
-    /// Optional description of what this template is for
-    pub description: Option<String>,
 }
 
 /// Complete skill data structure
@@ -97,10 +75,8 @@ pub struct Skill {
     pub id: SkillId,
     /// Metadata from YAML frontmatter
     pub metadata: SkillMetadata,
-    /// Parsed content sections
-    pub sections: SkillSections,
-    /// Full raw content of SKILL.md (excluding frontmatter)
-    pub raw_content: String,
+    /// Full content of SKILL.md (excluding frontmatter)
+    pub content: String,
     /// Path to the skill directory
     pub path: PathBuf,
     /// Reference files in the references/ subdirectory
@@ -135,8 +111,8 @@ impl Skill {
     }
 
     /// Check if skill has a specific reference file
-    pub fn get_reference(&self, filename: &str) -> Option<&SkillReference> {
-        self.references.iter().find(|r| r.filename == filename)
+    pub fn get_reference(&self, name: &str) -> Option<&SkillReference> {
+        self.references.iter().find(|r| r.name == name)
     }
 
     /// Get a specific template by name
@@ -286,8 +262,7 @@ mod tests {
                 file_globs: None,
                 extra: HashMap::new(),
             },
-            sections: SkillSections::default(),
-            raw_content: String::new(),
+            content: String::new(),
             path: PathBuf::from("/test"),
             references: vec![],
             templates: vec![],

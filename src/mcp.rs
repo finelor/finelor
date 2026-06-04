@@ -165,7 +165,7 @@ impl FinelorMcpServer {
             ));
         }
 
-        let value = execute_read_only_tool(&self.pool, &tool_call).await;
+        let value = execute_read_only_tool(&self.pool, None, &tool_call).await;
         Ok(Json(McpToolResponse {
             ok: value
                 .get("ok")

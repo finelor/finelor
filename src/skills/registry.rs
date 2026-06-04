@@ -7,6 +7,13 @@ use tokio::sync::RwLock;
 use crate::skills::loader::SkillLoader;
 use crate::skills::types::{Skill, SkillError, SkillFilter, SkillId, SkillResult};
 
+fn supporting_file_names<'a, T: 'a>(
+    items: impl Iterator<Item = &'a T>,
+    get_name: impl Fn(&'a T) -> String,
+) -> Vec<String> {
+    items.map(get_name).collect()
+}
+
 /// In-memory skill registry with caching
 #[derive(Debug)]
 pub struct SkillRegistry {
@@ -53,12 +60,16 @@ impl SkillRegistry {
     /// Refresh all skills from disk, rebuilding indexes
     pub async fn refresh(&self) -> SkillResult<()> {
         tracing::info!(
-            "Refreshing skill registry from {:?}",
-            self.loader.skills_dir()
+            skills_dir = %self.loader.skills_dir().display(),
+            "Refreshing skills registry from disk"
         );
 
         // Load all skills from disk
         let skills = self.loader.load_all().await?;
+        tracing::debug!(
+            loaded_skill_count = skills.len(),
+            "Rebuilding skills registry cache from loaded skill packages"
+        );
 
         // Clear existing caches
         {
@@ -78,6 +89,22 @@ impl SkillRegistry {
             for skill in skills {
                 let skill_id = skill.id.clone();
                 let category = skill.category().to_string();
+                tracing::debug!(
+                    skill_id = %skill_id,
+                    skill_name = skill.name(),
+                    category = category.as_str(),
+                    keyword_count = skill.metadata.keywords.as_ref().map(|k| k.len()).unwrap_or(0),
+                    extension_count = skill.metadata.file_extensions.as_ref().map(|e| e.len()).unwrap_or(0),
+                    reference_names = ?supporting_file_names(
+                        skill.references.iter(),
+                        |reference| reference.name.clone()
+                    ),
+                    template_names = ?supporting_file_names(
+                        skill.templates.iter(),
+                        |template| template.name.clone()
+                    ),
+                    "Caching loaded skill package in registry"
+                );
 
                 // Add to skills cache
                 skills_cache.insert(skill_id.clone(), Arc::new(skill));
@@ -114,7 +141,16 @@ impl SkillRegistry {
         }
 
         let count = self.skills.read().await.len();
-        tracing::info!("Skill registry refreshed with {} skills", count);
+        let category_count = self.category_index.read().await.len();
+        let keyword_count = self.keyword_index.read().await.len();
+        let extension_count = self.extension_index.read().await.len();
+        tracing::info!(
+            skill_count = count,
+            category_count,
+            keyword_count,
+            extension_count,
+            "Skill registry cache refreshed successfully"
+        );
 
         Ok(())
     }
@@ -122,10 +158,16 @@ impl SkillRegistry {
     /// Get a skill by ID
     pub async fn get_skill(&self, id: &SkillId) -> SkillResult<Arc<Skill>> {
         let skills = self.skills.read().await;
-        skills
+        let skill = skills
             .get(id)
             .cloned()
-            .ok_or_else(|| SkillError::NotFound(id.to_string()))
+            .ok_or_else(|| SkillError::NotFound(id.to_string()))?;
+        tracing::debug!(
+            skill_id = %id,
+            skill_name = skill.name(),
+            "Resolved skill from registry by id"
+        );
+        Ok(skill)
     }
 
     /// Get a skill by name (case-insensitive)
@@ -133,17 +175,30 @@ impl SkillRegistry {
         let skills = self.skills.read().await;
         let name_lower = name.to_lowercase();
 
-        skills
+        let skill = skills
             .values()
             .find(|s| s.name().to_lowercase() == name_lower)
             .cloned()
-            .ok_or_else(|| SkillError::NotFound(format!("Skill with name: {}", name)))
+            .ok_or_else(|| SkillError::NotFound(format!("Skill with name: {}", name)))?;
+        tracing::debug!(
+            requested_skill_name = name,
+            skill_id = %skill.id,
+            skill_name = skill.name(),
+            "Resolved skill from registry by name"
+        );
+        Ok(skill)
     }
 
     /// Get all skills
     pub async fn get_all_skills(&self) -> Vec<Arc<Skill>> {
         let skills = self.skills.read().await;
-        skills.values().cloned().collect()
+        let all = skills.values().cloned().collect::<Vec<_>>();
+        tracing::debug!(
+            skill_count = all.len(),
+            skill_names = ?all.iter().map(|skill| skill.name().to_string()).collect::<Vec<_>>(),
+            "Enumerated all skills from registry cache"
+        );
+        all
     }
 
     /// Get skills by category
@@ -282,6 +337,15 @@ impl SkillRegistry {
             }
         }
 
+        tracing::info!(
+            skill_id = %skill_id,
+            skill_name = skill_arc.name(),
+            category = skill_arc.category(),
+            reference_count = skill_arc.references.len(),
+            template_count = skill_arc.templates.len(),
+            "Loaded skill package into registry cache"
+        );
+
         Ok(skill_arc)
     }
 
@@ -326,6 +390,12 @@ impl SkillRegistry {
                 }
             }
         }
+
+        tracing::info!(
+            skill_id = %id,
+            skill_name = skill.name(),
+            "Removed skill package from registry cache"
+        );
 
         Ok(())
     }
@@ -390,8 +460,7 @@ mod tests {
                 file_globs: None,
                 extra: HashMap::new(),
             },
-            sections: Default::default(),
-            raw_content: String::new(),
+            content: String::new(),
             path: std::path::PathBuf::from(format!("/test/{}", id)),
             references: vec![],
             templates: vec![],

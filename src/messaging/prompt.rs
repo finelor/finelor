@@ -174,6 +174,15 @@ async fn build_skills_context(registry: &SkillRegistry) -> String {
         return "No skills are currently loaded.".to_string();
     }
 
+    tracing::info!(
+        count = skills.len(),
+        skill_names = ?skills
+            .iter()
+            .map(|skill| skill.name().to_string())
+            .collect::<Vec<_>>(),
+        "Injected skills into assistant system prompt context"
+    );
+
     let mut lines = vec![];
     lines.push("Skills available:".to_string());
     for skill in skills {

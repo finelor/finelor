@@ -1,3 +1,5 @@
+use std::path::{Component, Path, PathBuf};
+
 use crate::db::DbPool;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -8,7 +10,7 @@ use crate::query::{
     count_documents_requiring_attention, document_status_counts, document_summary_by_short_ref,
     list_documents_by_status, list_documents_requiring_attention, list_recent_documents,
 };
-use crate::skills::loader::SkillLoader;
+use crate::skills::SkillRegistry;
 
 use super::commands::describe_document_why;
 use super::intents::normalize_short_ref;
@@ -117,10 +119,13 @@ pub fn read_only_tool_catalog() -> Vec<AppToolDefinition> {
         },
         AppToolDefinition {
             name: "skill_view",
-            description: "View full content of a skill by name. Use to load and view a complete skill.",
+            description: "View full content of a skill by name, or load a specific supporting file such as a reference or template by path.",
             input_schema: json!({
                 "type": "object",
-                "properties": { "name": { "type": "string" } },
+                "properties": {
+                    "name": { "type": "string" },
+                    "path": { "type": "string" }
+                },
                 "required": ["name"],
                 "additionalProperties": false
             }),
@@ -197,9 +202,10 @@ pub fn is_mutating_prepare_tool(name: &str) -> bool {
 
 pub async fn execute_read_only_tool(
     pool: &DbPool,
+    skills_registry: Option<&SkillRegistry>,
     tool_call: &ReadOnlyToolCall,
 ) -> serde_json::Value {
-    match execute_read_only_tool_inner(pool, tool_call).await {
+    match execute_read_only_tool_inner(pool, skills_registry, tool_call).await {
         Ok(value) => json!({
             "ok": true,
             "tool": tool_call.name,
@@ -215,6 +221,7 @@ pub async fn execute_read_only_tool(
 
 async fn execute_read_only_tool_inner(
     pool: &DbPool,
+    skills_registry: Option<&SkillRegistry>,
     tool_call: &ReadOnlyToolCall,
 ) -> anyhow::Result<serde_json::Value> {
     match tool_call.name.as_str() {
@@ -256,9 +263,14 @@ async fn execute_read_only_tool_inner(
         }
         "skill_view" => {
             let name = required_skill_name(&tool_call.args)?;
-            read_skill_view_with_loader(&SkillLoader::new(), &name).await
+            let path = optional_skill_path(&tool_call.args)?;
+            let registry = required_skills_registry(skills_registry)?;
+            read_skill_view_with_registry(registry, &name, path.as_deref()).await
         }
-        "skill_list" => read_skill_list_with_loader(&SkillLoader::new()).await,
+        "skill_list" => {
+            let registry = required_skills_registry(skills_registry)?;
+            read_skill_list_with_registry(registry).await
+        }
         other => Err(anyhow::anyhow!("unknown read-only tool: {other}")),
     }
 }
@@ -316,17 +328,255 @@ fn required_skill_name(args: &serde_json::Value) -> anyhow::Result<String> {
         .map(|s| s.to_string())
 }
 
-async fn read_skill_view_with_loader(
-    loader: &SkillLoader,
+fn optional_skill_path(args: &serde_json::Value) -> anyhow::Result<Option<String>> {
+    match args.get("path") {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(path)) => {
+            let trimmed = path.trim();
+            if trimmed.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(trimmed.to_string()))
+            }
+        }
+        Some(other) => Err(anyhow::anyhow!("skill path must be a string: {other}")),
+    }
+}
+
+fn required_skills_registry(
+    skills_registry: Option<&SkillRegistry>,
+) -> anyhow::Result<&SkillRegistry> {
+    if skills_registry.is_some() {
+        tracing::debug!("Using skills registry for skill tool request");
+    } else {
+        tracing::debug!("Skill tool request attempted without a skills registry");
+    }
+    skills_registry.ok_or_else(|| anyhow::anyhow!("skills registry unavailable"))
+}
+
+async fn read_skill_view_with_registry(
+    registry: &SkillRegistry,
     name: &str,
+    path: Option<&str>,
 ) -> anyhow::Result<serde_json::Value> {
-    let skill = loader.load_skill(name).await?;
+    tracing::debug!(
+        requested_skill_name = name,
+        requested_supporting_path = path,
+        "Loading skill material from registry for skill_view"
+    );
+    let skill = registry.get_skill_by_name(name).await?;
+
+    if let Some(requested_path) = path {
+        return read_skill_supporting_file(&skill, requested_path);
+    }
+
+    tracing::info!(
+        skill_id = %skill.id,
+        skill_name = skill.name(),
+        reference_count = skill.references.len(),
+        template_count = skill.templates.len(),
+        reference_filenames = ?skill
+            .references
+            .iter()
+            .map(|reference| reference.name.clone())
+            .collect::<Vec<_>>(),
+        template_names = ?skill
+            .templates
+            .iter()
+            .map(|template| template.name.clone())
+            .collect::<Vec<_>>(),
+        "Loaded skill instructions from registry through skill_view"
+    );
+    tracing::debug!(
+        skill_id = %skill.id,
+        skill_name = skill.name(),
+        reference_paths = ?skill
+            .references
+            .iter()
+            .filter_map(|reference| reference_relative_path(&skill, reference.path.as_path()))
+            .map(|path| path.to_string_lossy().to_string())
+            .collect::<Vec<_>>(),
+        template_paths = ?skill
+            .templates
+            .iter()
+            .filter_map(|template| template_relative_path(&skill, template.path.as_path()))
+            .map(|path| path.to_string_lossy().to_string())
+            .collect::<Vec<_>>(),
+        "Loaded skill manifest from registry"
+    );
     Ok(skill_view_result(&skill))
 }
 
-async fn read_skill_list_with_loader(loader: &SkillLoader) -> anyhow::Result<serde_json::Value> {
-    let skills = loader.load_all().await?;
-    Ok(skill_list_result(&skills))
+fn read_skill_supporting_file(
+    skill: &crate::skills::types::Skill,
+    requested_path: &str,
+) -> anyhow::Result<serde_json::Value> {
+    let normalized = normalize_skill_supporting_path(requested_path)?;
+    let kind = normalized
+        .components()
+        .next()
+        .and_then(|component| match component {
+            Component::Normal(name) => name.to_str(),
+            _ => None,
+        })
+        .ok_or_else(|| anyhow::anyhow!("invalid skill supporting file path: {requested_path}"))?;
+
+    if kind == "references" {
+        if let Some(reference) = skill.references.iter().find(|reference| {
+            reference_relative_path(skill, reference.path.as_path())
+                .is_some_and(|relative| relative == normalized)
+        }) {
+            tracing::info!(
+                skill_id = %skill.id,
+                skill_name = skill.name(),
+                requested_path,
+                file_kind = "reference",
+                content_length = reference.content.len(),
+                "Loaded skill supporting file from registry through skill_view"
+            );
+            tracing::debug!(
+                skill_id = %skill.id,
+                skill_name = skill.name(),
+                requested_path,
+                resolved_path = %normalized.to_string_lossy(),
+                file_kind = "reference",
+                file_name = reference.name.as_str(),
+                content_length = reference.content.len(),
+                "Resolved reference file request from skill registry"
+            );
+            return Ok(json!({
+                "id": skill.id.0,
+                "skill_name": skill.metadata.name,
+                "requested_path": requested_path,
+                "resolved_path": normalized.to_string_lossy(),
+                "file_kind": "reference",
+                "name": reference.name,
+                "content": reference.content,
+            }));
+        }
+    }
+
+    if kind == "templates" {
+        if let Some(template) = skill.templates.iter().find(|template| {
+            template_relative_path(skill, template.path.as_path())
+                .is_some_and(|relative| relative == normalized)
+        }) {
+            tracing::info!(
+                skill_id = %skill.id,
+                skill_name = skill.name(),
+                requested_path,
+                file_kind = "template",
+                content_length = template.content.len(),
+                "Loaded skill supporting file from registry through skill_view"
+            );
+            tracing::debug!(
+                skill_id = %skill.id,
+                skill_name = skill.name(),
+                requested_path,
+                resolved_path = %normalized.to_string_lossy(),
+                file_kind = "template",
+                file_name = template.name.as_str(),
+                content_length = template.content.len(),
+                "Resolved template file request from skill registry"
+            );
+            return Ok(json!({
+                "id": skill.id.0,
+                "skill_name": skill.metadata.name,
+                "requested_path": requested_path,
+                "resolved_path": normalized.to_string_lossy(),
+                "file_kind": "template",
+                "name": template.name,
+                "content": template.content,
+            }));
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "skill supporting file not found or not allowed: {requested_path}"
+    ))
+}
+
+fn normalize_skill_supporting_path(requested_path: &str) -> anyhow::Result<PathBuf> {
+    let path = Path::new(requested_path);
+
+    if path.is_absolute() {
+        return Err(anyhow::anyhow!(
+            "absolute skill supporting file paths are not allowed: {requested_path}"
+        ));
+    }
+
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(segment) => normalized.push(segment),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                return Err(anyhow::anyhow!(
+                    "path traversal is not allowed in skill supporting file paths: {requested_path}"
+                ));
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(anyhow::anyhow!(
+                    "invalid skill supporting file path: {requested_path}"
+                ));
+            }
+        }
+    }
+
+    let mut components = normalized.components();
+    let root = components
+        .next()
+        .and_then(|component| match component {
+            Component::Normal(name) => name.to_str(),
+            _ => None,
+        })
+        .ok_or_else(|| anyhow::anyhow!("invalid skill supporting file path: {requested_path}"))?;
+
+    if root != "references" && root != "templates" {
+        return Err(anyhow::anyhow!(
+            "skill supporting file path must be under references/ or templates/: {requested_path}"
+        ));
+    }
+
+    if components.next().is_none() {
+        return Err(anyhow::anyhow!(
+            "skill supporting file path must include a file name: {requested_path}"
+        ));
+    }
+
+    Ok(normalized)
+}
+
+fn reference_relative_path(
+    skill: &crate::skills::types::Skill,
+    reference_path: &Path,
+) -> Option<PathBuf> {
+    reference_path
+        .strip_prefix(&skill.path)
+        .ok()
+        .map(Path::to_path_buf)
+}
+
+fn template_relative_path(
+    skill: &crate::skills::types::Skill,
+    template_path: &Path,
+) -> Option<PathBuf> {
+    template_path
+        .strip_prefix(&skill.path)
+        .ok()
+        .map(Path::to_path_buf)
+}
+
+async fn read_skill_list_with_registry(
+    registry: &SkillRegistry,
+) -> anyhow::Result<serde_json::Value> {
+    let skills = registry.get_all_skills().await;
+    tracing::info!(
+        skill_count = skills.len(),
+        skill_names = ?skills.iter().map(|skill| skill.name().to_string()).collect::<Vec<_>>(),
+        "Loaded skill list from registry through skill_list"
+    );
+    Ok(skill_list_result_from_arcs(&skills))
 }
 
 fn skill_view_result(skill: &crate::skills::types::Skill) -> serde_json::Value {
@@ -340,26 +590,23 @@ fn skill_view_result(skill: &crate::skills::types::Skill) -> serde_json::Value {
         "keywords": skill.metadata.keywords,
         "depends_on": skill.metadata.depends_on,
         "references": skill.references.iter().map(|r| json!({
-            "filename": r.filename,
+            "name": r.name,
+            "path": reference_relative_path(skill, r.path.as_path())
+                .map(|path| path.to_string_lossy().to_string()),
         })).collect::<Vec<_>>(),
         "templates": skill.templates.iter().map(|t| json!({
             "name": t.name,
-            "description": t.description,
+            "path": template_relative_path(skill, t.path.as_path())
+                .map(|path| path.to_string_lossy().to_string()),
         })).collect::<Vec<_>>(),
-        "sections": {
-            "overview": skill.sections.overview,
-            "when_to_use": skill.sections.when_to_use,
-            "when_not_to_use": skill.sections.when_not_to_use,
-            "workflow": skill.sections.workflow,
-            "examples": skill.sections.examples,
-            "references": skill.sections.references,
-            "extra": skill.sections.extra,
-        },
+        "content": skill.content,
         "loaded_at": skill.loaded_at,
     })
 }
 
-fn skill_list_result(skills: &[crate::skills::types::Skill]) -> serde_json::Value {
+fn skill_list_result_from_arcs(
+    skills: &[std::sync::Arc<crate::skills::types::Skill>],
+) -> serde_json::Value {
     let total_count = skills.len();
     json!({
         "total_count": total_count,
@@ -393,6 +640,7 @@ fn normalize_tool_arguments(args: &serde_json::Value) -> anyhow::Result<serde_js
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::skills::SkillRegistry;
     use std::fs;
     use tempfile::TempDir;
 
@@ -577,9 +825,13 @@ Useful overview.
             &[],
             &[],
         );
-        let loader = SkillLoader::with_dir(root.path());
+        let registry = SkillRegistry::with_dir(root.path());
+        registry
+            .initialize()
+            .await
+            .expect("registry should initialize");
 
-        let value = read_skill_list_with_loader(&loader)
+        let value = read_skill_list_with_registry(&registry)
             .await
             .expect("skill list should load");
 
@@ -616,14 +868,15 @@ Useful overview.
 2. Confirm
 "#,
             &[("usage.md", "# Usage\n\nFollow the process.")],
-            &[(
-                "invoice.html",
-                "<!-- description: Invoice template -->\n<html></html>",
-            )],
+            &[("invoice.html", "<html></html>")],
         );
-        let loader = SkillLoader::with_dir(root.path());
+        let registry = SkillRegistry::with_dir(root.path());
+        registry
+            .initialize()
+            .await
+            .expect("registry should initialize");
 
-        let value = read_skill_view_with_loader(&loader, "invoice-helper")
+        let value = read_skill_view_with_registry(&registry, "Invoice Helper", None)
             .await
             .expect("skill view should load");
 
@@ -632,15 +885,21 @@ Useful overview.
         assert_eq!(value["description"], "Helps with invoices");
         assert_eq!(value["category"], "accounting");
         assert_eq!(value["keywords"][0], "invoices");
-        assert_eq!(value["references"][0]["filename"], "usage.md");
+        assert_eq!(value["references"][0]["name"], "usage.md");
+        assert_eq!(value["references"][0]["path"], "references/usage.md");
         assert_eq!(value["templates"][0]["name"], "invoice.html");
-        assert_eq!(value["templates"][0]["description"], "Invoice template");
-        assert_eq!(value["sections"]["overview"], "Useful overview.");
+        assert_eq!(value["templates"][0]["path"], "templates/invoice.html");
         assert!(
-            value["sections"]["workflow"]
+            value["content"]
                 .as_str()
-                .expect("workflow")
+                .expect("content")
                 .contains("Ask questions")
+        );
+        assert!(
+            value["content"]
+                .as_str()
+                .expect("content")
+                .contains("Useful overview")
         );
     }
 
@@ -650,15 +909,209 @@ Useful overview.
         assert!(err.to_string().contains("missing required skill name"));
     }
 
+    #[test]
+    fn skill_view_accepts_optional_path_argument() {
+        assert_eq!(
+            optional_skill_path(&json!({ "path": "references/usage.md" })).unwrap(),
+            Some("references/usage.md".to_string())
+        );
+        assert_eq!(optional_skill_path(&json!({})).unwrap(), None);
+        assert_eq!(
+            optional_skill_path(&json!({ "path": "   " })).unwrap(),
+            None
+        );
+    }
+
     #[tokio::test]
     async fn skill_view_errors_for_unknown_skill_name() {
         let root = create_temp_skill_root();
-        let loader = SkillLoader::with_dir(root.path());
+        let registry = SkillRegistry::with_dir(root.path());
+        registry
+            .initialize()
+            .await
+            .expect("registry should initialize");
 
-        let err = read_skill_view_with_loader(&loader, "missing-skill")
+        let err = read_skill_view_with_registry(&registry, "missing-skill", None)
             .await
             .expect_err("unknown skill should fail");
 
         assert!(err.to_string().contains("missing-skill"));
+    }
+
+    #[tokio::test]
+    async fn skill_view_returns_reference_file_content() {
+        let root = create_temp_skill_root();
+        write_skill_fixture(
+            root.path(),
+            "invoice-helper",
+            r#"---
+name: Invoice Helper
+description: Helps with invoices
+category: accounting
+---
+# Invoice Helper
+
+## Overview
+
+Useful overview.
+"#,
+            &[("usage.md", "# Usage\n\nFollow the process.")],
+            &[],
+        );
+        let registry = SkillRegistry::with_dir(root.path());
+        registry
+            .initialize()
+            .await
+            .expect("registry should initialize");
+
+        let value =
+            read_skill_view_with_registry(&registry, "Invoice Helper", Some("references/usage.md"))
+                .await
+                .expect("reference view should load");
+
+        assert_eq!(value["file_kind"], "reference");
+        assert_eq!(value["name"], "usage.md");
+        assert!(
+            value["content"]
+                .as_str()
+                .unwrap()
+                .contains("Follow the process")
+        );
+    }
+
+    #[tokio::test]
+    async fn skill_view_returns_template_file_content() {
+        let root = create_temp_skill_root();
+        write_skill_fixture(
+            root.path(),
+            "invoice-helper",
+            r#"---
+name: Invoice Helper
+description: Helps with invoices
+category: accounting
+---
+# Invoice Helper
+
+## Overview
+
+Useful overview.
+"#,
+            &[],
+            &[("invoice.html", "<html></html>")],
+        );
+        let registry = SkillRegistry::with_dir(root.path());
+        registry
+            .initialize()
+            .await
+            .expect("registry should initialize");
+
+        let value = read_skill_view_with_registry(
+            &registry,
+            "Invoice Helper",
+            Some("templates/invoice.html"),
+        )
+        .await
+        .expect("template view should load");
+
+        assert_eq!(value["file_kind"], "template");
+        assert_eq!(value["name"], "invoice.html");
+        assert!(value["content"].as_str().unwrap().contains("<html>"));
+    }
+
+    #[tokio::test]
+    async fn skill_view_rejects_unknown_supporting_file_path() {
+        let root = create_temp_skill_root();
+        write_skill_fixture(
+            root.path(),
+            "invoice-helper",
+            r#"---
+name: Invoice Helper
+description: Helps with invoices
+category: accounting
+---
+# Invoice Helper
+"#,
+            &[],
+            &[],
+        );
+        let registry = SkillRegistry::with_dir(root.path());
+        registry
+            .initialize()
+            .await
+            .expect("registry should initialize");
+
+        let err = read_skill_view_with_registry(
+            &registry,
+            "Invoice Helper",
+            Some("references/missing.md"),
+        )
+        .await
+        .expect_err("missing file should fail");
+
+        assert!(err.to_string().contains("not found or not allowed"));
+    }
+
+    #[tokio::test]
+    async fn skill_view_rejects_path_traversal() {
+        let root = create_temp_skill_root();
+        write_skill_fixture(
+            root.path(),
+            "invoice-helper",
+            r#"---
+name: Invoice Helper
+description: Helps with invoices
+category: accounting
+---
+# Invoice Helper
+"#,
+            &[],
+            &[],
+        );
+        let registry = SkillRegistry::with_dir(root.path());
+        registry
+            .initialize()
+            .await
+            .expect("registry should initialize");
+
+        let err = read_skill_view_with_registry(&registry, "Invoice Helper", Some("../SKILL.md"))
+            .await
+            .expect_err("path traversal should fail");
+
+        assert!(err.to_string().contains("path traversal"));
+    }
+
+    #[tokio::test]
+    async fn skill_view_rejects_non_reference_or_template_path() {
+        let root = create_temp_skill_root();
+        write_skill_fixture(
+            root.path(),
+            "invoice-helper",
+            r#"---
+name: Invoice Helper
+description: Helps with invoices
+category: accounting
+---
+# Invoice Helper
+"#,
+            &[],
+            &[],
+        );
+        let registry = SkillRegistry::with_dir(root.path());
+        registry
+            .initialize()
+            .await
+            .expect("registry should initialize");
+
+        let err = read_skill_view_with_registry(&registry, "Invoice Helper", Some("SKILL.md"))
+            .await
+            .expect_err("non-supporting path should fail");
+
+        assert!(err.to_string().contains("references/ or templates/"));
+    }
+
+    #[test]
+    fn skill_tools_require_registry() {
+        let err = required_skills_registry(None).expect_err("missing registry should fail");
+        assert!(err.to_string().contains("skills registry unavailable"));
     }
 }

@@ -3,8 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::skills::types::{
-    Skill, SkillError, SkillId, SkillMetadata, SkillReference, SkillResult, SkillSections,
-    SkillTemplate,
+    Skill, SkillError, SkillId, SkillMetadata, SkillReference, SkillResult, SkillTemplate,
 };
 
 /// Default path for skills directory
@@ -41,10 +40,15 @@ impl SkillLoader {
     pub async fn load_all(&self) -> SkillResult<Vec<Skill>> {
         let mut skills = Vec::new();
 
+        tracing::info!(
+            skills_dir = %self.skills_dir.display(),
+            "Scanning skills directory for skill packages"
+        );
+
         if !self.skills_dir.exists() {
             tracing::info!(
-                "Skills directory does not exist, creating: {:?}",
-                self.skills_dir
+                skills_dir = %self.skills_dir.display(),
+                "Skills directory does not exist; creating it"
             );
             fs::create_dir_all(&self.skills_dir).map_err(|e| SkillError::Io(e.to_string()))?;
             return Ok(skills);
@@ -64,16 +68,50 @@ impl SkillLoader {
 
                 match self.load_skill(skill_name).await {
                     Ok(skill) => {
-                        tracing::info!("Loaded skill: {} from {:?}", skill_name, path);
+                        tracing::info!(
+                            skill_id = %skill.id,
+                            skill_name = skill.name(),
+                            category = skill.category(),
+                            reference_count = skill.references.len(),
+                            template_count = skill.templates.len(),
+                            skill_path = %path.display(),
+                            "Loaded skill package from disk"
+                        );
+                        tracing::debug!(
+                            skill_id = %skill.id,
+                            skill_name = skill.name(),
+                            reference_names = ?skill
+                                .references
+                                .iter()
+                                .map(|reference| reference.name.clone())
+                                .collect::<Vec<_>>(),
+                            template_names = ?skill
+                                .templates
+                                .iter()
+                                .map(|template| template.name.clone())
+                                .collect::<Vec<_>>(),
+                            "Loaded supporting files for skill package"
+                        );
                         skills.push(skill);
                     }
                     Err(e) => {
-                        tracing::warn!("Failed to load skill {}: {:?}", skill_name, e);
+                        tracing::warn!(
+                            skill_name,
+                            skill_path = %path.display(),
+                            error = %e,
+                            "Failed to load skill package from disk"
+                        );
                         // Continue loading other skills
                     }
                 }
             }
         }
+
+        tracing::info!(
+            skills_dir = %self.skills_dir.display(),
+            loaded_skill_count = skills.len(),
+            "Finished scanning skills directory"
+        );
 
         Ok(skills)
     }
@@ -81,6 +119,11 @@ impl SkillLoader {
     /// Load a specific skill by name
     pub async fn load_skill(&self, skill_name: &str) -> SkillResult<Skill> {
         let skill_dir = self.skills_dir.join(skill_name);
+        tracing::debug!(
+            skill_name,
+            skill_dir = %skill_dir.display(),
+            "Loading skill package from disk"
+        );
         if !skill_dir.exists() {
             return Err(SkillError::NotFound(skill_name.to_string()));
         }
@@ -102,9 +145,6 @@ impl SkillLoader {
         // Parse YAML frontmatter
         let metadata = Self::parse_frontmatter(metadata_str)?;
 
-        // Parse markdown sections
-        let sections = Self::parse_sections(markdown_content);
-
         // Load references
         let references = self.load_references(&skill_dir).await?;
 
@@ -116,17 +156,26 @@ impl SkillLoader {
             .ok()
             .and_then(|m| m.modified().ok());
 
-        Ok(Skill {
+        let skill = Skill {
             id: SkillId::new(skill_name),
             metadata,
-            sections,
-            raw_content: markdown_content.to_string(),
+            content: markdown_content.to_string(),
             path: skill_dir,
             references,
             templates,
             loaded_at: chrono::Utc::now(),
             modified_at,
-        })
+        };
+
+        tracing::debug!(
+            skill_id = %skill.id,
+            skill_name = skill.name(),
+            reference_count = skill.references.len(),
+            template_count = skill.templates.len(),
+            "Finished loading skill package from disk"
+        );
+
+        Ok(skill)
     }
 
     /// Split content into YAML frontmatter and markdown body
@@ -263,87 +312,17 @@ impl SkillLoader {
         })
     }
 
-    /// Parse markdown content into sections
-    fn parse_sections(markdown: &str) -> SkillSections {
-        let mut sections = SkillSections::default();
-        let mut extra: HashMap<String, String> = HashMap::new();
-
-        let mut current_section: Option<String> = None;
-        let mut current_content = String::new();
-
-        for line in markdown.lines() {
-            // Check for heading
-            if line.starts_with("## ") {
-                // Save previous section
-                if let Some(section_name) = current_section {
-                    let content = current_content.trim().to_string();
-                    Self::store_section(&mut sections, &mut extra, &section_name, &content);
-                }
-
-                // Start new section
-                current_section = Some(line[3..].trim().to_string());
-                current_content.clear();
-            } else if line.starts_with("# ") {
-                // Main title - skip
-                continue;
-            } else {
-                // Add to current section content
-                current_content.push_str(line);
-                current_content.push('\n');
-            }
-        }
-
-        // Save last section
-        if let Some(section_name) = current_section {
-            let content = current_content.trim().to_string();
-            Self::store_section(&mut sections, &mut extra, &section_name, &content);
-        }
-
-        sections.extra = extra;
-        sections
-    }
-
-    /// Store section content in the appropriate field
-    fn store_section(
-        sections: &mut SkillSections,
-        extra: &mut HashMap<String, String>,
-        name: &str,
-        content: &str,
-    ) {
-        let name_lower = name.to_lowercase();
-
-        match name_lower.as_str() {
-            "overview" | "introduction" | "about" => {
-                sections.overview = content.to_string();
-            }
-            "when to use" | "when_to_use" | "when-to-use" | "usage" => {
-                sections.when_to_use = content.to_string();
-            }
-            "when not to use" | "when_not_to_use" | "when-not-to-use" | "limitations"
-            | "caveats" => {
-                sections.when_not_to_use = content.to_string();
-            }
-            "workflow" | "steps" | "process" | "how to" => {
-                sections.workflow = content.to_string();
-            }
-            "examples" | "example" | "sample" | "demos" => {
-                sections.examples = content.to_string();
-            }
-            "references" | "reference" | "resources" | "links" => {
-                sections.references = content.to_string();
-            }
-            _ => {
-                extra.insert(name.to_string(), content.to_string());
-            }
-        }
-    }
-
     /// Load reference files from the references/ subdirectory
     async fn load_references(&self, skill_dir: &Path) -> SkillResult<Vec<SkillReference>> {
         let references_dir = skill_dir.join("references");
         let mut references = Vec::new();
 
         if !references_dir.exists() {
+            tracing::debug!(
+                skill_dir = %skill_dir.display(),
+                references_dir = %references_dir.display(),
+                "Skill package has no references directory"
+            );
             return Ok(references);
         }
 
@@ -354,19 +333,26 @@ impl SkillLoader {
             let path = entry.path();
 
             if path.is_file() {
-                let filename = path
+                let name = path
                     .file_name()
                     .and_then(|n| n.to_str())
                     .ok_or_else(|| SkillError::ParseError("Invalid filename".to_string()))?
                     .to_string();
 
                 // Only load markdown files
-                if filename.ends_with(".md") {
+                if name.ends_with(".md") {
                     let content =
                         fs::read_to_string(&path).map_err(|e| SkillError::Io(e.to_string()))?;
 
+                    tracing::debug!(
+                        skill_dir = %skill_dir.display(),
+                        reference_name = name,
+                        reference_path = %path.display(),
+                        content_length = content.len(),
+                        "Loaded reference file from skill package"
+                    );
                     references.push(SkillReference {
-                        filename,
+                        name,
                         path,
                         content,
                     });
@@ -383,6 +369,11 @@ impl SkillLoader {
         let mut templates = Vec::new();
 
         if !templates_dir.exists() {
+            tracing::debug!(
+                skill_dir = %skill_dir.display(),
+                templates_dir = %templates_dir.display(),
+                "Skill package has no templates directory"
+            );
             return Ok(templates);
         }
 
@@ -402,42 +393,22 @@ impl SkillLoader {
                 let content =
                     fs::read_to_string(&path).map_err(|e| SkillError::Io(e.to_string()))?;
 
-                // Extract description from first comment or frontmatter
-                let description = Self::extract_template_description(&content);
-
+                tracing::debug!(
+                    skill_dir = %skill_dir.display(),
+                    template_name = name,
+                    template_path = %path.display(),
+                    content_length = content.len(),
+                    "Loaded template file from skill package"
+                );
                 templates.push(SkillTemplate {
                     name,
                     path,
                     content,
-                    description,
                 });
             }
         }
 
         Ok(templates)
-    }
-
-    /// Extract description from template file
-    fn extract_template_description(content: &str) -> Option<String> {
-        // Look for description in HTML comment <!-- description: ... -->
-        if let Some(start) = content.find("<!--") {
-            if let Some(end) = content.find("-->") {
-                let comment = &content[start + 4..end];
-                if let Some(desc_start) = comment.find("description:") {
-                    return Some(comment[desc_start + 12..].trim().to_string());
-                }
-            }
-        }
-
-        // Look for first line comment
-        for line in content.lines().take(5) {
-            let trimmed = line.trim();
-            if trimmed.starts_with("# ") || trimmed.starts_with("// ") {
-                return Some(trimmed[3..].to_string());
-            }
-        }
-
-        None
     }
 }
 
@@ -509,47 +480,6 @@ Hello world.
         assert_eq!(markdown, content.trim_start());
     }
 
-    #[test]
-    fn test_parse_sections() {
-        let markdown = r#"# Title
-
-## Overview
-
-This is overview.
-
-## When to Use
-
-Use this when...
-
-## Custom Section
-
-Custom content."#;
-
-        let sections = SkillLoader::parse_sections(markdown);
-
-        assert_eq!(sections.overview, "This is overview.");
-        assert_eq!(sections.when_to_use, "Use this when...");
-        assert!(sections.extra.contains_key("Custom Section"));
-        assert_eq!(
-            sections.extra.get("Custom Section").unwrap(),
-            "Custom content."
-        );
-    }
-
-    #[test]
-    fn test_store_section_variations() {
-        let mut sections = SkillSections::default();
-        let mut extra = HashMap::new();
-
-        SkillLoader::store_section(&mut sections, &mut extra, "When to Use", "content1");
-        SkillLoader::store_section(&mut sections, &mut extra, "when-not-to-use", "content2");
-        SkillLoader::store_section(&mut sections, &mut extra, "Unknown Section", "content3");
-
-        assert_eq!(sections.when_to_use, "content1");
-        assert_eq!(sections.when_not_to_use, "content2");
-        assert_eq!(extra.get("Unknown Section").unwrap(), "content3");
-    }
-
     #[tokio::test]
     async fn load_skill_reads_complete_skill_with_references_and_templates() {
         let root = create_temp_skill_root();
@@ -588,10 +518,7 @@ Create invoices carefully.
 Example content.
 "#,
             &[("usage.md", "# Usage\n\nUse responsibly.")],
-            &[(
-                "invoice.html",
-                "<!-- description: Invoice HTML template -->\n<html></html>",
-            )],
+            &[("invoice.html", "<html></html>")],
         );
 
         let loader = SkillLoader::with_dir(root.path());
@@ -619,17 +546,13 @@ Example content.
             skill.metadata.file_globs.as_ref().expect("globs"),
             &vec!["*.pdf".to_string()]
         );
-        assert_eq!(skill.sections.overview, "Create invoices carefully.");
-        assert!(skill.sections.workflow.contains("Ask questions"));
+        assert!(skill.content.contains("Create invoices carefully."));
+        assert!(skill.content.contains("Ask questions"));
         assert_eq!(skill.references.len(), 1);
-        assert_eq!(skill.references[0].filename, "usage.md");
+        assert_eq!(skill.references[0].name, "usage.md");
         assert!(skill.references[0].content.contains("Use responsibly"));
         assert_eq!(skill.templates.len(), 1);
         assert_eq!(skill.templates[0].name, "invoice.html");
-        assert_eq!(
-            skill.templates[0].description.as_deref(),
-            Some("Invoice HTML template")
-        );
         assert!(skill.templates[0].content.contains("<html>"));
     }
 

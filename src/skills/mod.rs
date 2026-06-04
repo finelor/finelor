@@ -33,32 +33,23 @@
 //!
 //! Description of the skill...
 //!
-//! ## When to Use
-//!
-//! Use this skill when...
-//!
-//! ## When NOT to Use
-//!
-//! Don't use this skill when...
-//!
 //! ## Workflow
 //!
 //! 1. Step one
 //! 2. Step two
 //! ```
 
-pub mod loader;
+mod loader;
 pub mod registry;
 pub mod types;
 
 // Re-export main types
-pub use loader::SkillLoader;
 pub use registry::{
     SharedSkillRegistry, SkillRegistry, create_skill_registry, create_skill_registry_with_path,
 };
 pub use types::{
     Skill, SkillError, SkillFilter, SkillId, SkillMetadata, SkillReference, SkillResult,
-    SkillSections, SkillTemplate,
+    SkillTemplate,
 };
 
 /// Default skills directory path
