@@ -103,12 +103,14 @@ https://YOUR_FINELOR_HOSTNAME
 
 Then:
 
-1. Create your account.
+1. Signup your new account.
 2. Complete the setup checklist.
-3. Connect Telegram or Slack.
+3. Connect Telegram or Slack in Settings page.
 4. Send a test invoice or receipt.
 
-## Use Your Own Domain
+## Advanced
+
+### Use Your Own Domain
 
 You can start with a Hostinger hostname if one is available. Later, you can use your own domain.
 
