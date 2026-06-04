@@ -1,83 +1,55 @@
 # syntax=docker/dockerfile:1.7
 
-FROM lukemathwalker/cargo-chef:latest-rust-1.95.0 AS chef
+#############################
+####    BUILDER STAGE    ####
+#############################
+
+FROM rust:1.95.0-bookworm AS builder
 WORKDIR /app
 
-COPY Cargo.lock ./
-
+# Install system tools needed by Rust crates and cargo-leptos.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends pkg-config libssl-dev ca-certificates \
+    && apt-get install -y --no-install-recommends pkg-config ca-certificates wget \
     && rm -rf /var/lib/apt/lists/*
 
-RUN rustup target add wasm32-unknown-unknown
-ARG TARGETARCH
-RUN set -eux; \
-    case "$TARGETARCH" in \
-      amd64) LEPTOS_TRIPLE=x86_64-unknown-linux-gnu; WASM_TRIPLE=x86_64-unknown-linux-musl ;; \
-      arm64) LEPTOS_TRIPLE=aarch64-unknown-linux-gnu; WASM_TRIPLE=aarch64-unknown-linux-musl ;; \
-      *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
-    esac; \
-    LEPTOS_VERSION=v0.3.6; \
-    WASM_BINDGEN_VERSION="$(awk '/^name = "wasm-bindgen"$/ { found=1; next } found && /^version = / { gsub(/"/, "", $3); print $3; exit }' Cargo.lock)"; \
-    curl --fail --show-error --location \
-      --output "/tmp/cargo-leptos-${LEPTOS_TRIPLE}.tar.gz" \
-      "https://github.com/leptos-rs/cargo-leptos/releases/download/${LEPTOS_VERSION}/cargo-leptos-${LEPTOS_TRIPLE}.tar.gz"; \
-    curl --fail --show-error --location \
-      --output "/tmp/cargo-leptos-${LEPTOS_TRIPLE}.tar.gz.sha256" \
-      "https://github.com/leptos-rs/cargo-leptos/releases/download/${LEPTOS_VERSION}/cargo-leptos-${LEPTOS_TRIPLE}.tar.gz.sha256"; \
-    cd /tmp; \
-    sha256sum --check "cargo-leptos-${LEPTOS_TRIPLE}.tar.gz.sha256"; \
-    tar -xzf "cargo-leptos-${LEPTOS_TRIPLE}.tar.gz"; \
-    install -m 0755 "cargo-leptos-${LEPTOS_TRIPLE}/cargo-leptos" /usr/local/bin/cargo-leptos; \
-    rm -rf /tmp/cargo-leptos*; \
-    curl --fail --show-error --location \
-      --output "/tmp/wasm-bindgen-${WASM_BINDGEN_VERSION}-${WASM_TRIPLE}.tar.gz" \
-      "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${WASM_BINDGEN_VERSION}/wasm-bindgen-${WASM_BINDGEN_VERSION}-${WASM_TRIPLE}.tar.gz"; \
-    curl --fail --show-error --location \
-      --output "/tmp/wasm-bindgen-${WASM_BINDGEN_VERSION}-${WASM_TRIPLE}.tar.gz.sha256sum" \
-      "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${WASM_BINDGEN_VERSION}/wasm-bindgen-${WASM_BINDGEN_VERSION}-${WASM_TRIPLE}.tar.gz.sha256sum"; \
-    printf "%s  %s\n" "$(cut -d ' ' -f 1 "wasm-bindgen-${WASM_BINDGEN_VERSION}-${WASM_TRIPLE}.tar.gz.sha256sum")" "wasm-bindgen-${WASM_BINDGEN_VERSION}-${WASM_TRIPLE}.tar.gz" | sha256sum --check -; \
-    tar -xzf "wasm-bindgen-${WASM_BINDGEN_VERSION}-${WASM_TRIPLE}.tar.gz"; \
-    install -m 0755 "wasm-bindgen-${WASM_BINDGEN_VERSION}-${WASM_TRIPLE}/wasm-bindgen" /usr/local/bin/wasm-bindgen; \
-    rm -rf /tmp/wasm-bindgen*
+# Install the WASM target and the cargo-leptos subcommand.
+RUN rustup target add wasm32-unknown-unknown \
+    && cargo install cargo-binstall \
+    && cargo binstall cargo-leptos -y
 
-FROM chef AS planner
-COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
-COPY src ./src
-COPY assets ./assets
-COPY public ./public
-COPY style ./style
-COPY migrations ./migrations
-RUN cargo chef prepare --recipe-path recipe.json
+COPY . .
 
-FROM chef AS builder
-COPY --from=planner /app/recipe.json recipe.json
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    cargo chef cook --recipe-path recipe.json
-
-COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
-COPY src ./src
-COPY assets ./assets
-COPY public ./public
-COPY style ./style
-COPY migrations ./migrations
-ENV SQLX_OFFLINE=true
-ENV LEPTOS_TAILWIND_VERSION=v4.2.1
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/root/.cache/cargo-leptos \
+# Cache Cargo outputs across Docker builds so small source changes rebuild faster.
+RUN --mount=type=cache,target=/app/target \
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git/db \
     cargo leptos build
+
+# Move the generated outputs out of the cache mount so later stages can copy them.
+RUN --mount=type=cache,target=/app/target \
+    mkdir -p /artifacts \
+    && cp /app/target/debug/finelor /artifacts/finelor \
+    && cp -a /app/target/site /artifacts/site
+
+
+
+#############################
+####    RUNTIME STAGE    ####
+#############################
 
 FROM debian:bookworm-slim AS runtime
 WORKDIR /app
 
+# Install runtime CA certificates and wget for local health checks.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates wget \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /app/target/debug/finelor /usr/local/bin/finelor
-COPY --from=builder /app/target/site ./target/site
+# Copy the compiled server binary and Leptos static assets.
+COPY --from=builder /artifacts/finelor /usr/local/bin/finelor
+COPY --from=builder /artifacts/site ./target/site
+
+# Include runtime files needed when the image is run outside compose mounts.
 COPY migrations ./migrations
 COPY assets ./assets
 COPY config.yaml ./config.yaml
