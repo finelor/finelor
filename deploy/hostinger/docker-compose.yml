@@ -1,0 +1,33 @@
+services:
+  app:
+    image: ghcr.io/finelor/finelor:latest
+    restart: unless-stopped
+    environment:
+      DATABASE_PATH: /app/.finelor/db/finelor.db
+      UPLOAD_STORAGE_PATH: /app/.finelor/uploads
+      EXPORT_OUTPUT_PATH: /app/.finelor/exports
+      PUBLIC_HOST: ${PUBLIC_HOST:?set PUBLIC_HOST}
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:?set OLLAMA_API_KEY}
+      WEB_ALLOWED_HOSTS: ${WEB_ALLOWED_HOSTS:-${PUBLIC_HOST}}
+      WEB_ALLOWED_ORIGINS: ${WEB_ALLOWED_ORIGINS:-https://${PUBLIC_HOST}}
+      MESSAGING_PROVIDER: ${MESSAGING_PROVIDER:?set MESSAGING_PROVIDER to telegram or slack}
+      MESSAGING_TELEGRAM_BOT_TOKEN: ${MESSAGING_TELEGRAM_BOT_TOKEN:-}
+      MESSAGING_SLACK_BOT_TOKEN: ${MESSAGING_SLACK_BOT_TOKEN:-}
+      MESSAGING_SLACK_APP_TOKEN: ${MESSAGING_SLACK_APP_TOKEN:-}
+    volumes:
+      - finelor_runtime:/app/.finelor
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.finelor.rule=Host(`${PUBLIC_HOST:?set PUBLIC_HOST}`)
+      - traefik.http.routers.finelor.entrypoints=websecure
+      - traefik.http.routers.finelor.tls.certresolver=letsencrypt
+      - traefik.http.services.finelor.loadbalancer.server.port=3000
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  finelor_runtime:
