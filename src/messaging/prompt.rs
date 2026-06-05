@@ -474,6 +474,9 @@ mod tests {
                 latest_document_ref: Some("D000057".to_string()),
                 latest_list_topic: Some("pending review documents".to_string()),
                 latest_ordered_refs: vec!["D000057".to_string(), "D000061".to_string()],
+                latest_skill_name: None,
+                latest_skill_supporting_paths: vec![],
+                latest_action_topic: None,
             },
         };
 
