@@ -33,7 +33,7 @@ leptos_dom = { version = "0.8.8" }
 leptos_icons = "0.7.1"
 icondata = { version = "0.7.0", default-features = false, features = ["lucide"] }
 console_error_panic_hook = { version = "0.1", optional = true }
-wasm-bindgen = { version = "=0.2.122", optional = true }
+wasm-bindgen = { version = "0.2.122", optional = true }
 web-sys = { version = "0.3.95", features = ["Clipboard", "EventSource", "MessageEvent", "Navigator", "Window"], optional = true }
 
 # Auth
