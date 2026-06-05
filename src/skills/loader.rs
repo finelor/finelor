@@ -188,17 +188,29 @@ impl SkillLoader {
             return Ok(("", trimmed));
         }
 
-        // Find the end delimiter (--- after the start)
-        let after_start = &trimmed[3..]; // Skip first ---
-        if let Some(end_pos) = after_start.find("---") {
-            let frontmatter = after_start[..end_pos].trim();
-            let markdown = after_start[end_pos + 3..].trim_start();
-            Ok((frontmatter, markdown))
-        } else {
-            Err(SkillError::InvalidFrontmatter(
-                "Missing closing --- for YAML frontmatter".to_string(),
-            ))
+        let mut lines = trimmed.split_inclusive('\n');
+        let opening_line = lines.next().unwrap_or(trimmed);
+        if opening_line.trim_end_matches(['\r', '\n']).trim() != "---" {
+            return Ok(("", trimmed));
         }
+
+        let frontmatter_start = opening_line.len();
+        let mut cursor = frontmatter_start;
+
+        for line in lines {
+            let line_len = line.len();
+            let normalized = line.trim_end_matches(['\r', '\n']).trim();
+            if normalized == "---" {
+                let frontmatter = trimmed[frontmatter_start..cursor].trim();
+                let markdown = trimmed[cursor + line_len..].trim_start();
+                return Ok((frontmatter, markdown));
+            }
+            cursor += line_len;
+        }
+
+        Err(SkillError::InvalidFrontmatter(
+            "Missing closing --- for YAML frontmatter".to_string(),
+        ))
     }
 
     /// Parse YAML frontmatter into SkillMetadata
@@ -478,6 +490,34 @@ Hello world.
         let (frontmatter, markdown) = SkillLoader::split_frontmatter(content).unwrap();
         assert!(frontmatter.is_empty());
         assert_eq!(markdown, content.trim_start());
+    }
+
+    #[test]
+    fn test_split_frontmatter_ignores_embedded_dashes_inside_yaml_values() {
+        let content = r#"---
+name: test
+description: "uses --- inside metadata"
+category: accounting
+---
+# Content
+
+Hello world.
+"#;
+
+        let (frontmatter, markdown) = SkillLoader::split_frontmatter(content).unwrap();
+        assert!(frontmatter.contains(r#"description: "uses --- inside metadata""#));
+        assert!(markdown.contains("Hello world."));
+    }
+
+    #[test]
+    fn test_split_frontmatter_requires_closing_delimiter_line() {
+        let content = r#"---
+name: test
+description: "uses --- inside metadata""#;
+
+        let err = SkillLoader::split_frontmatter(content).expect_err("missing closing delimiter");
+        assert!(matches!(err, SkillError::InvalidFrontmatter(_)));
+        assert!(err.to_string().contains("Missing closing ---"));
     }
 
     #[tokio::test]

@@ -477,13 +477,28 @@ mod tests {
         let root = create_temp_skill_root();
         write_skill_fixture(
             root.path(),
-            "invoice-helper",
+            "zebra-helper",
             r#"---
-name: Invoice Helper
-description: Helps with structured invoice workflows
+name: Zebra Helper
+description: Helps with structured zebra workflows
 category: accounting
 ---
-# Invoice Helper
+# Zebra Helper
+
+## Overview
+
+Useful overview.
+"#,
+        );
+        write_skill_fixture(
+            root.path(),
+            "alpha-helper",
+            r#"---
+name: Alpha Helper
+description: Helps with structured alpha workflows
+category: accounting
+---
+# Alpha Helper
 
 ## Overview
 
@@ -507,12 +522,17 @@ Useful overview.
 
         let system = &messages[0].content;
         assert!(system.contains("# Available Skills"));
-        assert!(system.contains("Invoice Helper"));
-        assert!(system.contains("Helps with structured invoice workflows"));
+        assert!(system.contains("Alpha Helper"));
+        assert!(system.contains("Zebra Helper"));
+        assert!(system.contains("Helps with structured alpha workflows"));
         assert!(system.contains("Match skills by request intent"));
         assert!(system.contains("load that skill with skill_view(name) before answering"));
         assert!(system.contains("load only the specific reference/template files needed"));
         assert!(!system.contains("To use a skill, ask about it by name"));
+        assert!(
+            system.find("- Alpha Helper: Helps with structured alpha workflows")
+                < system.find("- Zebra Helper: Helps with structured zebra workflows")
+        );
     }
 
     #[tokio::test]

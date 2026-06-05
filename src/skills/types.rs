@@ -185,37 +185,39 @@ impl SkillFilter {
 
     /// Check if a skill matches this filter
     pub fn matches(&self, skill: &Skill) -> bool {
-        if let Some(cat) = &self.category {
-            if !skill.category().eq_ignore_ascii_case(cat) {
-                return false;
-            }
+        if let Some(cat) = &self.category
+            && !skill.category().eq_ignore_ascii_case(cat)
+        {
+            return false;
         }
 
         if let Some(keyword) = &self.keyword {
             let keyword_lower = keyword.to_lowercase();
-            if !skill.metadata.keywords.as_ref().map_or(false, |kw| {
-                kw.iter().any(|k| k.to_lowercase().contains(&keyword_lower))
-            }) && !skill.name().to_lowercase().contains(&keyword_lower)
+            if !skill
+                .metadata
+                .keywords
+                .as_ref()
+                .is_some_and(|kw| kw.iter().any(|k| k.to_lowercase().contains(&keyword_lower)))
+                && !skill.name().to_lowercase().contains(&keyword_lower)
                 && !skill.description().to_lowercase().contains(&keyword_lower)
             {
                 return false;
             }
         }
 
-        if let Some(ext) = &self.file_extension {
-            if !skill.applies_to_extension(ext) {
-                return false;
-            }
+        if let Some(ext) = &self.file_extension
+            && !skill.applies_to_extension(ext)
+        {
+            return false;
         }
 
-        if let Some(pattern) = &self.name_pattern {
-            if !skill
+        if let Some(pattern) = &self.name_pattern
+            && !skill
                 .name()
                 .to_lowercase()
                 .contains(&pattern.to_lowercase())
-            {
-                return false;
-            }
+        {
+            return false;
         }
 
         true
@@ -227,6 +229,16 @@ impl SkillFilter {
 pub enum SkillError {
     #[error("skill not found: {0}")]
     NotFound(String),
+    #[error(
+        "duplicate skill display name '{name}' for skill ids '{first_id}' and '{second_id}' at '{first_path}' and '{second_path}'"
+    )]
+    DuplicateSkillName {
+        name: String,
+        first_id: String,
+        second_id: String,
+        first_path: String,
+        second_path: String,
+    },
     #[error("invalid YAML frontmatter: {0}")]
     InvalidFrontmatter(String),
     #[error("invalid markdown content: {0}")]

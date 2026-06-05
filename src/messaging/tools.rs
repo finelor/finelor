@@ -421,74 +421,74 @@ fn read_skill_supporting_file(
         })
         .ok_or_else(|| anyhow::anyhow!("invalid skill supporting file path: {requested_path}"))?;
 
-    if kind == "references" {
-        if let Some(reference) = skill.references.iter().find(|reference| {
+    if kind == "references"
+        && let Some(reference) = skill.references.iter().find(|reference| {
             reference_relative_path(skill, reference.path.as_path())
                 .is_some_and(|relative| relative == normalized)
-        }) {
-            tracing::info!(
-                skill_id = %skill.id,
-                skill_name = skill.name(),
-                requested_path,
-                file_kind = "reference",
-                content_length = reference.content.len(),
-                "Loaded skill supporting file from registry through skill_view"
-            );
-            tracing::debug!(
-                skill_id = %skill.id,
-                skill_name = skill.name(),
-                requested_path,
-                resolved_path = %normalized.to_string_lossy(),
-                file_kind = "reference",
-                file_name = reference.name.as_str(),
-                content_length = reference.content.len(),
-                "Resolved reference file request from skill registry"
-            );
-            return Ok(json!({
-                "id": skill.id.0,
-                "skill_name": skill.metadata.name,
-                "requested_path": requested_path,
-                "resolved_path": normalized.to_string_lossy(),
-                "file_kind": "reference",
-                "name": reference.name,
-                "content": reference.content,
-            }));
-        }
+        })
+    {
+        tracing::info!(
+            skill_id = %skill.id,
+            skill_name = skill.name(),
+            requested_path,
+            file_kind = "reference",
+            content_length = reference.content.len(),
+            "Loaded skill supporting file from registry through skill_view"
+        );
+        tracing::debug!(
+            skill_id = %skill.id,
+            skill_name = skill.name(),
+            requested_path,
+            resolved_path = %normalized.to_string_lossy(),
+            file_kind = "reference",
+            file_name = reference.name.as_str(),
+            content_length = reference.content.len(),
+            "Resolved reference file request from skill registry"
+        );
+        return Ok(json!({
+            "id": skill.id.0,
+            "skill_name": skill.metadata.name,
+            "requested_path": requested_path,
+            "resolved_path": normalized.to_string_lossy(),
+            "file_kind": "reference",
+            "name": reference.name,
+            "content": reference.content,
+        }));
     }
 
-    if kind == "templates" {
-        if let Some(template) = skill.templates.iter().find(|template| {
+    if kind == "templates"
+        && let Some(template) = skill.templates.iter().find(|template| {
             template_relative_path(skill, template.path.as_path())
                 .is_some_and(|relative| relative == normalized)
-        }) {
-            tracing::info!(
-                skill_id = %skill.id,
-                skill_name = skill.name(),
-                requested_path,
-                file_kind = "template",
-                content_length = template.content.len(),
-                "Loaded skill supporting file from registry through skill_view"
-            );
-            tracing::debug!(
-                skill_id = %skill.id,
-                skill_name = skill.name(),
-                requested_path,
-                resolved_path = %normalized.to_string_lossy(),
-                file_kind = "template",
-                file_name = template.name.as_str(),
-                content_length = template.content.len(),
-                "Resolved template file request from skill registry"
-            );
-            return Ok(json!({
-                "id": skill.id.0,
-                "skill_name": skill.metadata.name,
-                "requested_path": requested_path,
-                "resolved_path": normalized.to_string_lossy(),
-                "file_kind": "template",
-                "name": template.name,
-                "content": template.content,
-            }));
-        }
+        })
+    {
+        tracing::info!(
+            skill_id = %skill.id,
+            skill_name = skill.name(),
+            requested_path,
+            file_kind = "template",
+            content_length = template.content.len(),
+            "Loaded skill supporting file from registry through skill_view"
+        );
+        tracing::debug!(
+            skill_id = %skill.id,
+            skill_name = skill.name(),
+            requested_path,
+            resolved_path = %normalized.to_string_lossy(),
+            file_kind = "template",
+            file_name = template.name.as_str(),
+            content_length = template.content.len(),
+            "Resolved template file request from skill registry"
+        );
+        return Ok(json!({
+            "id": skill.id.0,
+            "skill_name": skill.metadata.name,
+            "requested_path": requested_path,
+            "resolved_path": normalized.to_string_lossy(),
+            "file_kind": "template",
+            "name": template.name,
+            "content": template.content,
+        }));
     }
 
     Err(anyhow::anyhow!(
@@ -813,14 +813,32 @@ mod tests {
         let root = create_temp_skill_root();
         write_skill_fixture(
             root.path(),
-            "invoice-helper",
+            "zebra-helper",
             r#"---
-name: Invoice Helper
-description: Helps with invoices
+name: Zebra Helper
+description: Helps with zebra invoices
 category: accounting
 version: "1.0.0"
 ---
-# Invoice Helper
+# Zebra Helper
+
+## Overview
+
+Useful overview.
+"#,
+            &[],
+            &[],
+        );
+        write_skill_fixture(
+            root.path(),
+            "alpha-helper",
+            r#"---
+name: Alpha Helper
+description: Helps with alpha invoices
+category: accounting
+version: "2.0.0"
+---
+# Alpha Helper
 
 ## Overview
 
@@ -839,12 +857,17 @@ Useful overview.
             .await
             .expect("skill list should load");
 
-        assert_eq!(value["total_count"], 1);
-        assert_eq!(value["items"][0]["id"], "invoice-helper");
-        assert_eq!(value["items"][0]["name"], "Invoice Helper");
-        assert_eq!(value["items"][0]["description"], "Helps with invoices");
+        assert_eq!(value["total_count"], 2);
+        assert_eq!(value["items"][0]["id"], "alpha-helper");
+        assert_eq!(value["items"][0]["name"], "Alpha Helper");
+        assert_eq!(
+            value["items"][0]["description"],
+            "Helps with alpha invoices"
+        );
         assert_eq!(value["items"][0]["category"], "accounting");
-        assert_eq!(value["items"][0]["version"], "1.0.0");
+        assert_eq!(value["items"][0]["version"], "2.0.0");
+        assert_eq!(value["items"][1]["id"], "zebra-helper");
+        assert_eq!(value["items"][1]["name"], "Zebra Helper");
     }
 
     #[tokio::test]
