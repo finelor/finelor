@@ -11,10 +11,7 @@ use crate::agents::review::{HumanReviewKeyboard, ReviewField};
 use crate::agents::{HumanReviewCallbackResult, process_human_review_callback};
 use crate::config::AppConfig;
 use crate::inference::{OllamaProvider, ToolChatMessage};
-use crate::query::{
-    document_ref_by_short_ref, document_status_counts, list_documents_by_status,
-    list_documents_requiring_attention, list_recent_documents, workspace_profile,
-};
+use crate::query::{document_ref_by_short_ref, workspace_identity};
 use crate::queue::QueueProducer;
 use crate::skills::SkillRegistry;
 use crate::web::events::AppEventBus;
@@ -43,7 +40,7 @@ use super::interactions::{
     DocumentInteractionTextInput, clear_document_interactions,
     process_pending_document_interaction_text, start_document_interaction,
 };
-use super::prompt::{AccountingContextSnapshot, PromptAssemblyInput, assemble_chat_messages};
+use super::prompt::{PromptAssemblyInput, WorkspaceIdentitySnapshot, assemble_chat_messages};
 use super::tools::{
     MAX_READ_ONLY_TOOL_CALLS, ReadOnlyToolCall, agent_inference_tools, execute_read_only_tool,
     is_mutating_prepare_tool, read_only_inference_tools,
@@ -193,7 +190,7 @@ impl AgentGatewayState {
             "Agent loop started"
         );
 
-        let accounting_context = match self.build_accounting_context_snapshot().await {
+        let workspace_identity = match self.build_workspace_identity_snapshot().await {
             Ok(snapshot) => Some(snapshot),
             Err(err) => {
                 tracing::warn!(
@@ -212,7 +209,7 @@ impl AgentGatewayState {
             session_key,
             source,
             text,
-            accounting_context,
+            workspace_identity,
             conversation_context,
             skills_registry: Some(self.skills_registry.clone()),
         })
@@ -511,13 +508,13 @@ impl AgentGatewayState {
         .map_err(anyhow::Error::from)
     }
 
-    async fn build_accounting_context_snapshot(&self) -> anyhow::Result<AccountingContextSnapshot> {
-        Ok(AccountingContextSnapshot {
-            workspace: workspace_profile(&self.pool).await?,
-            counts: document_status_counts(&self.pool).await?,
-            recent_documents: list_recent_documents(&self.pool, 5).await?,
-            attention_documents: list_documents_requiring_attention(&self.pool, 5).await?,
-            export_ready_documents: list_documents_by_status(&self.pool, "EXPORT_READY", 5).await?,
+    async fn build_workspace_identity_snapshot(&self) -> anyhow::Result<WorkspaceIdentitySnapshot> {
+        let identity = workspace_identity(&self.pool).await?;
+        Ok(WorkspaceIdentitySnapshot {
+            workspace_name: identity
+                .as_ref()
+                .and_then(|identity| identity.workspace_name.clone()),
+            jurisdiction: identity.and_then(|identity| identity.jurisdiction),
         })
     }
 

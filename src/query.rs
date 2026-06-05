@@ -8,6 +8,12 @@ pub struct WorkspaceProfile {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct WorkspaceIdentity {
+    pub workspace_name: Option<String>,
+    pub jurisdiction: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct DocumentStatusCounts {
     pub processing_count: i64,
     pub pending_count: i64,
@@ -103,6 +109,23 @@ pub async fn workspace_profile(pool: &DbPool) -> anyhow::Result<Option<Workspace
 
 pub async fn company_profile(pool: &DbPool) -> anyhow::Result<Option<WorkspaceProfile>> {
     workspace_profile(pool).await
+}
+
+pub async fn workspace_identity(pool: &DbPool) -> anyhow::Result<Option<WorkspaceIdentity>> {
+    let row = sqlx::query_as::<_, WorkspaceIdentity>(
+        r#"
+        SELECT
+            NULLIF(TRIM(display_name), '') AS workspace_name,
+            NULLIF(TRIM(jurisdiction), '') AS jurisdiction
+        FROM company_profile
+        WHERE singleton = TRUE
+        LIMIT 1
+        "#,
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row)
 }
 
 pub async fn document_status_counts(pool: &DbPool) -> anyhow::Result<DocumentStatusCounts> {

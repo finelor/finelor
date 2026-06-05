@@ -4,7 +4,6 @@ use uuid::Uuid;
 
 use crate::config::AppConfig;
 use crate::inference::ChatMessage;
-use crate::query::{DocumentStatusCounts, DocumentSummary, WorkspaceProfile};
 use crate::skills::SkillRegistry;
 
 use super::contracts::MessageSource;
@@ -21,18 +20,15 @@ pub struct PromptAssemblyInput<'a> {
     pub session_key: &'a str,
     pub source: &'a MessageSource,
     pub text: &'a str,
-    pub accounting_context: Option<AccountingContextSnapshot>,
+    pub workspace_identity: Option<WorkspaceIdentitySnapshot>,
     pub conversation_context: Option<ConversationContext>,
     pub skills_registry: Option<Arc<SkillRegistry>>,
 }
 
 #[derive(Debug, Clone)]
-pub struct AccountingContextSnapshot {
-    pub workspace: Option<WorkspaceProfile>,
-    pub counts: DocumentStatusCounts,
-    pub recent_documents: Vec<DocumentSummary>,
-    pub attention_documents: Vec<DocumentSummary>,
-    pub export_ready_documents: Vec<DocumentSummary>,
+pub struct WorkspaceIdentitySnapshot {
+    pub workspace_name: Option<String>,
+    pub jurisdiction: Option<String>,
 }
 
 pub async fn assemble_chat_messages(input: PromptAssemblyInput<'_>) -> Vec<ChatMessage> {
@@ -65,9 +61,9 @@ async fn assemble_system_prompt(input: &PromptAssemblyInput<'_>) -> String {
         .as_deref()
         .unwrap_or("unknown");
 
-    let accounting_context = match input.accounting_context.as_ref() {
-        Some(snapshot) => format_accounting_context(snapshot),
-        None => "No workspace accounting snapshot is available in this chat turn. Do not claim access to document status, accounting data, exports, or prior messages unless the user supplied that information directly.".to_string(),
+    let workspace_identity = match input.workspace_identity.as_ref() {
+        Some(snapshot) => format_workspace_identity(snapshot),
+        None => "No workspace identity snapshot is available in this chat turn. Do not claim access to workspace identity, document status, accounting data, exports, or prior messages unless the user supplied that information directly.".to_string(),
     };
     let conversation_context = input
         .conversation_context
@@ -94,14 +90,13 @@ async fn assemble_system_prompt(input: &PromptAssemblyInput<'_>) -> String {
          Profile identifier: {profile}\n\n\
          # Available Skills\n\
          {skills_context}\n\n\
-         # Workspace Accounting Snapshot\n\
-         {accounting_context}\n\n\
+         # Workspace Identity Snapshot\n\
+         {workspace_identity}\n\n\
          # Recent Session Context\n\
          {conversation_context}\n\n\
          # Runtime Tools\n\
-         Read-only Finelor tools are provided by the runtime. Use them when the snapshot is insufficient for an operational document question. \
-         Mutating tools only prepare a user confirmation prompt; they do not execute changes. Use prepare tools only when the user explicitly asks to review, retry, reprocess, or export. \
-         For ambiguous wording such as whether something can be retried or exported, answer or ask a clarifying question instead of preparing a confirmation. \
+         Read-only Finelor tools are provided by the runtime. Use them for operational document questions and whenever the identity snapshot is insufficient. \
+         Mutating tools only prepare a user confirmation prompt; they do not execute changes. \
          You may make at most {max_tool_calls} read-only tool calls in this turn. \
          Use total_count, not returned_count, when answering count questions. \
          Use concise Markdown for readable chat replies. Prefer short bullets over tables. \
@@ -197,86 +192,21 @@ async fn build_skills_context(registry: &SkillRegistry) -> String {
     lines.join("\n")
 }
 
-fn format_accounting_context(snapshot: &AccountingContextSnapshot) -> String {
-    let workspace_line = snapshot
-        .workspace
-        .as_ref()
-        .map(|workspace| {
-            format!(
-                "Workspace: {} ({})",
-                workspace.display_name,
-                workspace
-                    .jurisdiction
-                    .as_deref()
-                    .unwrap_or("unknown jurisdiction")
-            )
-        })
-        .unwrap_or_else(|| "Workspace: unknown display name".to_string());
-
+fn format_workspace_identity(snapshot: &WorkspaceIdentitySnapshot) -> String {
     let mut lines = vec![
         "Snapshot scope: this workspace only.".to_string(),
         "Snapshot freshness: point-in-time at prompt assembly.".to_string(),
-        workspace_line,
-        "Status counts:".to_string(),
-        format!("- Processing: {}", snapshot.counts.processing_count),
-        format!("- Pending review: {}", snapshot.counts.pending_count),
-        format!("- Export ready: {}", snapshot.counts.ready_count),
-        format!("- Exported: {}", snapshot.counts.exported_count),
-        format!("- Failed: {}", snapshot.counts.failed_count),
-        String::new(),
-        "Recent documents:".to_string(),
     ];
-    append_document_lines(
-        &mut lines,
-        &snapshot.recent_documents,
-        "No recent documents.",
-    );
 
-    lines.push(String::new());
-    lines.push("Needs attention:".to_string());
-    append_document_lines(
-        &mut lines,
-        &snapshot.attention_documents,
-        "No documents currently need attention.",
-    );
+    if let Some(workspace_name) = snapshot.workspace_name.as_deref() {
+        lines.push(format!("Workspace: {workspace_name}"));
+    }
 
-    lines.push(String::new());
-    lines.push("Export ready:".to_string());
-    append_document_lines(
-        &mut lines,
-        &snapshot.export_ready_documents,
-        "No documents currently ready for export.",
-    );
+    if let Some(jurisdiction) = snapshot.jurisdiction.as_deref() {
+        lines.push(format!("Jurisdiction: {jurisdiction}"));
+    }
 
     lines.join("\n")
-}
-
-fn append_document_lines(lines: &mut Vec<String>, documents: &[DocumentSummary], empty: &str) {
-    if documents.is_empty() {
-        lines.push(format!("- {empty}"));
-        return;
-    }
-
-    lines.extend(documents.iter().map(format_document_snapshot_line));
-}
-
-fn format_document_snapshot_line(document: &DocumentSummary) -> String {
-    let supplier = document
-        .supplier_name
-        .as_deref()
-        .unwrap_or("Unknown supplier");
-    let amount = document.total_amount.as_deref().unwrap_or("unknown amount");
-    let date = document.invoice_date.as_deref().unwrap_or("unknown date");
-    let mut line = format!(
-        "- {} | {} | {} | {} SEK | {}",
-        document.short_ref, document.status, supplier, amount, date
-    );
-
-    if let Some(reason) = document.review_reason.as_deref() {
-        line.push_str(&format!(" | Reason: {reason}"));
-    }
-
-    line
 }
 
 fn load_agent_soul(config: &AppConfig) -> String {
@@ -309,7 +239,6 @@ mod tests {
     };
     use crate::db::ChannelType;
     use crate::messaging::conversation::{ConversationMessage, ConversationReferents};
-    use crate::query::{DocumentStatusCounts, WorkspaceProfile};
     use crate::skills::SkillRegistry;
 
     fn create_temp_skill_root() -> TempDir {
@@ -341,7 +270,7 @@ mod tests {
             session_key: "agent:main:telegram:private:12345",
             source: &source,
             text: "Hello",
-            accounting_context: None,
+            workspace_identity: None,
             conversation_context: None,
             skills_registry: None,
         })
@@ -359,12 +288,12 @@ mod tests {
         assert!(
             messages[0]
                 .content
-                .contains("No workspace accounting snapshot")
+                .contains("No workspace identity snapshot")
         );
         assert!(
             messages[0]
                 .content
-                .contains("Do not claim access to document status")
+                .contains("Do not claim access to workspace identity, document status")
         );
         assert!(messages[0].content.contains("# Available Skills"));
         assert!(messages[0].content.contains("No skills registry available"));
@@ -391,7 +320,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prompt_assembly_includes_company_accounting_snapshot() {
+    async fn prompt_assembly_includes_workspace_identity_snapshot() {
         let config = test_config();
         let workspace_id = Uuid::parse_str("37fd57d2-51d9-42a3-9bda-8d01f9ad03e1").unwrap();
         let source = MessageSource {
@@ -402,22 +331,9 @@ mod tests {
             source_timestamp: None,
             metadata: json!({ "chat_type": "private" }),
         };
-        let snapshot = AccountingContextSnapshot {
-            workspace: Some(WorkspaceProfile {
-                id: 1,
-                display_name: "Acme AB".to_string(),
-                jurisdiction: Some("SE".to_string()),
-            }),
-            counts: DocumentStatusCounts {
-                processing_count: 2,
-                pending_count: 1,
-                ready_count: 3,
-                exported_count: 4,
-                failed_count: 0,
-            },
-            recent_documents: vec![document_summary("D000057", "EXPORT_READY")],
-            attention_documents: vec![document_summary("D000058", "PENDING_HUMAN_REVIEW")],
-            export_ready_documents: vec![document_summary("D000057", "EXPORT_READY")],
+        let snapshot = WorkspaceIdentitySnapshot {
+            workspace_name: Some("Acme AB".to_string()),
+            jurisdiction: Some("SE".to_string()),
         };
 
         let messages = assemble_chat_messages(PromptAssemblyInput {
@@ -426,7 +342,7 @@ mod tests {
             session_key: "agent:main:telegram:private:12345",
             source: &source,
             text: "What needs attention?",
-            accounting_context: Some(snapshot),
+            workspace_identity: Some(snapshot),
             conversation_context: None,
             skills_registry: None,
         })
@@ -435,9 +351,10 @@ mod tests {
         let system = &messages[0].content;
         assert!(system.contains("Snapshot scope: this workspace only."));
         assert!(system.contains("Snapshot freshness: point-in-time"));
-        assert!(system.contains("Workspace: Acme AB (SE)"));
-        assert!(system.contains("- Pending review: 1"));
-        assert!(system.contains("D000058 | PENDING_HUMAN_REVIEW"));
+        assert!(system.contains("Workspace: Acme AB"));
+        assert!(system.contains("Jurisdiction: SE"));
+        assert!(!system.contains("Pending review"));
+        assert!(!system.contains("Recent documents"));
         assert!(system.contains("Do not invent documents"));
         assert!(system.contains(
             "Do not claim to have queried live data beyond the provided snapshot and tools"
@@ -486,7 +403,7 @@ mod tests {
             session_key: "agent:main:telegram:private:12345",
             source: &source,
             text: "Why the first one?",
-            accounting_context: None,
+            workspace_identity: None,
             conversation_context: Some(conversation_context),
             skills_registry: None,
         })
@@ -523,7 +440,7 @@ mod tests {
             session_key: "agent:main:telegram:private:12345",
             source: &source,
             text: "What skills do you have?",
-            accounting_context: None,
+            workspace_identity: None,
             conversation_context: None,
             skills_registry: Some(registry),
         })
@@ -565,7 +482,7 @@ Useful overview.
             session_key: "agent:main:telegram:private:12345",
             source: &source,
             text: "Show me the available skills",
-            accounting_context: None,
+            workspace_identity: None,
             conversation_context: None,
             skills_registry: Some(registry),
         })
@@ -606,7 +523,7 @@ Useful overview.
             session_key: "agent:main:telegram:private:12345",
             source: &source,
             text: "What can you do?",
-            accounting_context: None,
+            workspace_identity: None,
             conversation_context: None,
             skills_registry: Some(registry),
         })
@@ -616,17 +533,29 @@ Useful overview.
         assert!(messages[0].content.contains("Helps with review workflows"));
     }
 
-    fn document_summary(short_ref: &str, status: &str) -> DocumentSummary {
-        DocumentSummary {
-            id: 1,
-            short_ref: short_ref.to_string(),
-            status: status.to_string(),
-            supplier_name: Some("Supplier AB".to_string()),
-            invoice_date: Some("2026-05-13".to_string()),
-            total_amount: Some("1250.00".to_string()),
-            confidence_score: Some(0.92),
-            review_reason: Some("Needs VAT check".to_string()),
-        }
+    #[tokio::test]
+    async fn prompt_assembly_omits_missing_optional_workspace_identity_fields() {
+        let config = test_config();
+        let source = test_source();
+
+        let messages = assemble_chat_messages(PromptAssemblyInput {
+            config: &config,
+            workspace_id: Uuid::parse_str("37fd57d2-51d9-42a3-9bda-8d01f9ad03e1").unwrap(),
+            session_key: "agent:main:telegram:private:12345",
+            source: &source,
+            text: "Who am I working for?",
+            workspace_identity: Some(WorkspaceIdentitySnapshot {
+                workspace_name: Some("Acme AB".to_string()),
+                jurisdiction: None,
+            }),
+            conversation_context: None,
+            skills_registry: None,
+        })
+        .await;
+
+        let system = &messages[0].content;
+        assert!(system.contains("Workspace: Acme AB"));
+        assert!(!system.contains("Jurisdiction:"));
     }
 
     fn test_source() -> MessageSource {
