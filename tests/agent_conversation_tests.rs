@@ -166,8 +166,8 @@ async fn conversation_metadata_preserves_ordered_referents() {
                 "total_count": 2,
                 "returned_count": 2,
                 "items": [
-                    { "short_ref": "D000057" },
-                    { "short_ref": "D000061" }
+                    { "document_short_ref": "D000057" },
+                    { "document_short_ref": "D000061" }
                 ]
             }
         }),

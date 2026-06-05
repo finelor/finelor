@@ -55,11 +55,6 @@ pub async fn assemble_chat_messages(input: PromptAssemblyInput<'_>) -> Vec<ChatM
 async fn assemble_system_prompt(input: &PromptAssemblyInput<'_>) -> String {
     let soul = load_agent_soul(input.config);
     let platform = input.source.channel.as_str();
-    let profile = input
-        .source
-        .profile_identifier
-        .as_deref()
-        .unwrap_or("unknown");
 
     let workspace_identity = match input.workspace_identity.as_ref() {
         Some(snapshot) => format_workspace_identity(snapshot),
@@ -85,9 +80,7 @@ async fn assemble_system_prompt(input: &PromptAssemblyInput<'_>) -> String {
          # Runtime Context\n\
          Workspace ID: {workspace_id}\n\
          Session: {session_key}\n\
-         Channel: {platform}\n\
-         Channel identifier: {channel_identifier}\n\
-         Profile identifier: {profile}\n\n\
+         Channel: {platform}\n\n\
          # Available Skills\n\
          {skills_context}\n\n\
          # Workspace Identity Snapshot\n\
@@ -96,8 +89,13 @@ async fn assemble_system_prompt(input: &PromptAssemblyInput<'_>) -> String {
          {conversation_context}\n\n\
          # Runtime Tools\n\
          Read-only Finelor tools are provided by the runtime. Use them for operational document questions and whenever the identity snapshot is insufficient. \
+         If a request clearly matches an available skill, load that skill with skill_view(name) before answering, then use runtime tools as needed for current workspace data. \
+         Use skills for workflow, constraints, and response format; use tools for live operational facts. \
+         If a loaded skill exposes a relevant reference or template, load only the specific supporting file you need with skill_view(name, path). \
+         Skip skill loading only for trivial turns that are fully answerable without workflow guidance. \
          Mutating tools only prepare a user confirmation prompt; they do not execute changes. \
          You may make at most {max_tool_calls} read-only tool calls in this turn. \
+         skill_view also uses this read-only tool budget, so load at most one matching skill by default and only fetch supporting files that materially improve the answer. \
          Use total_count, not returned_count, when answering count questions. \
          Use concise Markdown for readable chat replies. Prefer short bullets over tables. \
          If the user asks for something outside Finelor, invoices, receipts, accounting workflow, document review, uploads, exports, or workspace accounting data, return an answer refusing briefly and describe supported Finelor work. \
@@ -106,10 +104,9 @@ async fn assemble_system_prompt(input: &PromptAssemblyInput<'_>) -> String {
          Use recent session context only to resolve conversational references such as \"that one\", \"the first one\", \"those\", \"do it\", or \"why\". \
          Treat the snapshot and read-only tool results as workspace-scoped and point-in-time. Do not invent documents, statuses, amounts, exports, or actions outside the snapshot or tool results. \
          Always use tools or deterministic action paths for current accounting state and mutations; conversation history is not accounting truth. \
-         Do not claim to have queried live data beyond the provided snapshot and tools. Do not provide final accounting, tax, or legal advice.",
+        Do not claim to have queried live data beyond the provided snapshot and tools. Do not provide final accounting, tax, or legal advice.",
         workspace_id = input.workspace_id,
         session_key = input.session_key,
-        channel_identifier = input.source.channel_identifier,
         max_tool_calls = MAX_READ_ONLY_TOOL_CALLS,
     )
 }
@@ -122,7 +119,7 @@ fn format_conversation_context(context: &ConversationContext) -> String {
 
     if let Some(short_ref) = context.referents.latest_document_ref.as_deref() {
         lines.push(format!(
-            "- Latest document-like referent: {short_ref} (verify current state with tools before answering or acting)."
+            "- Latest document reference: {short_ref} (verify current state with tools before answering or acting)."
         ));
     }
 
@@ -184,8 +181,13 @@ async fn build_skills_context(registry: &SkillRegistry) -> String {
         lines.push(format!("- {}: {}", skill.name(), skill.description()));
     }
     lines.push(String::new());
+    lines.push("Match skills by request intent, not only by explicit skill name.".to_string());
     lines.push(
-        "To use a skill, ask about it by name so the assistant can load the relevant instructions."
+        "When a request falls within an available skill, load that skill with skill_view(name) before answering."
+            .to_string(),
+    );
+    lines.push(
+        "Use tools after the skill load for live data, and load only the specific reference/template files needed with skill_view(name, path)."
             .to_string(),
     );
 
@@ -304,6 +306,21 @@ mod tests {
             messages[0]
                 .content
                 .contains("tools are provided by the runtime")
+        );
+        assert!(
+            messages[0]
+                .content
+                .contains("If a request clearly matches an available skill")
+        );
+        assert!(
+            messages[0]
+                .content
+                .contains("Use skills for workflow, constraints, and response format")
+        );
+        assert!(
+            messages[0]
+                .content
+                .contains("skill_view also uses this read-only tool budget")
         );
         assert!(
             messages[0]
@@ -492,7 +509,10 @@ Useful overview.
         assert!(system.contains("# Available Skills"));
         assert!(system.contains("Invoice Helper"));
         assert!(system.contains("Helps with structured invoice workflows"));
-        assert!(system.contains("To use a skill, ask about it by name"));
+        assert!(system.contains("Match skills by request intent"));
+        assert!(system.contains("load that skill with skill_view(name) before answering"));
+        assert!(system.contains("load only the specific reference/template files needed"));
+        assert!(!system.contains("To use a skill, ask about it by name"));
     }
 
     #[tokio::test]

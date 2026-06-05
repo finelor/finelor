@@ -396,7 +396,7 @@ impl AgentGatewayState {
     ) -> anyhow::Result<GatewayMessageResponse> {
         match tool_call.name.as_str() {
             "prepare_open_review" => {
-                let short_ref = required_tool_short_ref(&tool_call.args)?;
+                let short_ref = required_tool_document_short_ref(&tool_call.args)?;
                 let Some(document) = document_ref_by_short_ref(&self.pool, &short_ref).await?
                 else {
                     return Ok(GatewayMessageResponse::text(format!(
@@ -410,7 +410,7 @@ impl AgentGatewayState {
                         source,
                         Some(document.id),
                         AgentConfirmationActionKind::OpenReview,
-                        json!({ "short_ref": short_ref }),
+                        json!({ "document_short_ref": short_ref }),
                     )
                     .await?;
                 Ok(confirmation_response(
@@ -419,7 +419,7 @@ impl AgentGatewayState {
                 ))
             }
             "prepare_retry_document" => {
-                let short_ref = required_tool_short_ref(&tool_call.args)?;
+                let short_ref = required_tool_document_short_ref(&tool_call.args)?;
                 let Some(document) = document_ref_by_short_ref(&self.pool, &short_ref).await?
                 else {
                     return Ok(GatewayMessageResponse::text(format!(
@@ -433,7 +433,7 @@ impl AgentGatewayState {
                         source,
                         Some(document.id),
                         AgentConfirmationActionKind::RetryDocument,
-                        json!({ "short_ref": short_ref }),
+                        json!({ "document_short_ref": short_ref }),
                     )
                     .await?;
                 Ok(confirmation_response(
@@ -447,7 +447,7 @@ impl AgentGatewayState {
             "prepare_export_documents" => {
                 let payload = export_payload_from_tool_args(&tool_call.args)?;
                 let document_id = if let Some(short_ref) =
-                    payload.get("short_ref").and_then(|v| v.as_str())
+                    payload.get("document_short_ref").and_then(|v| v.as_str())
                 {
                     let Some(document) = document_ref_by_short_ref(&self.pool, short_ref).await?
                     else {
@@ -469,12 +469,13 @@ impl AgentGatewayState {
                         payload.clone(),
                     )
                     .await?;
-                let message =
-                    if let Some(short_ref) = payload.get("short_ref").and_then(|v| v.as_str()) {
-                        format!("Confirm exporting {} if it is ready?", short_ref)
-                    } else {
-                        "Confirm exporting all currently ready documents?".to_string()
-                    };
+                let message = if let Some(short_ref) =
+                    payload.get("document_short_ref").and_then(|v| v.as_str())
+                {
+                    format!("Confirm exporting {} if it is ready?", short_ref)
+                } else {
+                    "Confirm exporting all currently ready documents?".to_string()
+                };
                 Ok(confirmation_response(confirmation.id, message))
             }
             other => Ok(GatewayMessageResponse::text(format!(
@@ -684,11 +685,11 @@ impl AgentGatewayState {
 
         let response = match confirmation.action_kind {
             AgentConfirmationActionKind::OpenReview => {
-                let short_ref = confirmation_short_ref(&confirmation)?;
+                let short_ref = confirmation_document_short_ref(&confirmation)?;
                 reopen_review_actions(&self.pool, &short_ref).await?
             }
             AgentConfirmationActionKind::RetryDocument => {
-                let short_ref = confirmation_short_ref(&confirmation)?;
+                let short_ref = confirmation_document_short_ref(&confirmation)?;
                 GatewayMessageResponse::text(retry_document(self, source, &short_ref).await?)
             }
             AgentConfirmationActionKind::ExportDocuments => {
@@ -765,22 +766,25 @@ fn confirmation_matches_source(confirmation: &AgentConfirmation, source: &Messag
         && confirmation.expires_at >= chrono::Utc::now().timestamp()
 }
 
-fn required_tool_short_ref(args: &serde_json::Value) -> anyhow::Result<String> {
+fn required_tool_document_short_ref(args: &serde_json::Value) -> anyhow::Result<String> {
     let raw = args
-        .get("short_ref")
+        .get("document_short_ref")
         .and_then(|value| value.as_str())
-        .ok_or_else(|| anyhow::anyhow!("missing required short_ref"))?;
-    normalize_short_ref(raw).ok_or_else(|| anyhow::anyhow!("invalid short_ref: {raw}"))
+        .ok_or_else(|| anyhow::anyhow!("missing required document_short_ref"))?;
+    normalize_short_ref(raw).ok_or_else(|| anyhow::anyhow!("invalid document_short_ref: {raw}"))
 }
 
 fn export_payload_from_tool_args(args: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
     let mut payload = serde_json::Map::new();
-    if let Some(raw) = args.get("short_ref").and_then(|value| value.as_str()) {
+    if let Some(raw) = args
+        .get("document_short_ref")
+        .and_then(|value| value.as_str())
+    {
         payload.insert(
-            "short_ref".to_string(),
+            "document_short_ref".to_string(),
             json!(
                 normalize_short_ref(raw)
-                    .ok_or_else(|| anyhow::anyhow!("invalid short_ref: {raw}"))?
+                    .ok_or_else(|| anyhow::anyhow!("invalid document_short_ref: {raw}"))?
             ),
         );
     }
@@ -810,20 +814,20 @@ fn export_payload_from_tool_args(args: &serde_json::Value) -> anyhow::Result<ser
     Ok(serde_json::Value::Object(payload))
 }
 
-fn confirmation_short_ref(confirmation: &AgentConfirmation) -> anyhow::Result<String> {
+fn confirmation_document_short_ref(confirmation: &AgentConfirmation) -> anyhow::Result<String> {
     confirmation
         .payload
-        .get("short_ref")
+        .get("document_short_ref")
         .and_then(|value| value.as_str())
         .map(ToString::to_string)
-        .ok_or_else(|| anyhow::anyhow!("confirmation missing short_ref"))
+        .ok_or_else(|| anyhow::anyhow!("confirmation missing document_short_ref"))
 }
 
 fn confirmation_export_args(confirmation: &AgentConfirmation) -> GatewayIntentArgs {
     GatewayIntentArgs {
-        short_ref: confirmation
+        document_short_ref: confirmation
             .payload
-            .get("short_ref")
+            .get("document_short_ref")
             .and_then(|value| value.as_str())
             .map(ToString::to_string),
         date_from: confirmation
@@ -858,10 +862,10 @@ fn slash_route(resolution: &GatewayIntentResolution) -> SlashRoute {
     match resolution.intent {
         GatewayIntentKind::Help => SlashRoute::Help,
         GatewayIntentKind::Status => {
-            if let Some(short_ref) = resolution.args.short_ref.as_deref() {
+            if let Some(short_ref) = resolution.args.document_short_ref.as_deref() {
                 SlashRoute::ReadOnlyTool(ReadOnlyToolCall {
                     name: "get_document".to_string(),
-                    args: json!({ "short_ref": short_ref }),
+                    args: json!({ "document_short_ref": short_ref }),
                 })
             } else {
                 SlashRoute::ReadOnlyTool(ReadOnlyToolCall {
@@ -886,11 +890,15 @@ fn slash_route(resolution: &GatewayIntentResolution) -> SlashRoute {
             name: "list_documents".to_string(),
             args: json!({ "limit": 1 }),
         }),
-        GatewayIntentKind::Why if resolution.args.short_ref.is_some() => {
-            let short_ref = resolution.args.short_ref.as_deref().unwrap_or_default();
+        GatewayIntentKind::Why if resolution.args.document_short_ref.is_some() => {
+            let short_ref = resolution
+                .args
+                .document_short_ref
+                .as_deref()
+                .unwrap_or_default();
             SlashRoute::ReadOnlyTool(ReadOnlyToolCall {
                 name: "explain_document".to_string(),
-                args: json!({ "short_ref": short_ref }),
+                args: json!({ "document_short_ref": short_ref }),
             })
         }
         GatewayIntentKind::Unknown | GatewayIntentKind::GeneralAccountingChat => SlashRoute::Help,
@@ -1159,9 +1167,9 @@ mod tests {
         match slash_route(&why) {
             SlashRoute::ReadOnlyTool(tool_call) => {
                 assert_eq!(tool_call.name, "explain_document");
-                assert_eq!(tool_call.args["short_ref"], "D000057");
+                assert_eq!(tool_call.args["document_short_ref"], "D000057");
             }
-            _ => panic!("why with short_ref should route to read-only tool"),
+            _ => panic!("why with document_short_ref should route to read-only tool"),
         }
     }
 
@@ -1199,24 +1207,28 @@ mod tests {
     }
 
     #[test]
-    fn required_tool_short_ref_normalizes_or_rejects_refs() {
+    fn required_tool_document_short_ref_normalizes_or_rejects_refs() {
         assert_eq!(
-            required_tool_short_ref(&json!({ "short_ref": "57" })).unwrap(),
+            required_tool_document_short_ref(&json!({ "document_short_ref": "57" })).unwrap(),
             "D000057"
         );
 
-        let missing = required_tool_short_ref(&json!({})).expect_err("missing ref");
-        assert!(missing.to_string().contains("missing required short_ref"));
+        let missing = required_tool_document_short_ref(&json!({})).expect_err("missing ref");
+        assert!(
+            missing
+                .to_string()
+                .contains("missing required document_short_ref")
+        );
 
-        let invalid =
-            required_tool_short_ref(&json!({ "short_ref": "ABC" })).expect_err("invalid ref");
-        assert!(invalid.to_string().contains("invalid short_ref"));
+        let invalid = required_tool_document_short_ref(&json!({ "document_short_ref": "ABC" }))
+            .expect_err("invalid ref");
+        assert!(invalid.to_string().contains("invalid document_short_ref"));
     }
 
     #[test]
     fn export_payload_from_tool_args_normalizes_supported_filters() {
         let payload = export_payload_from_tool_args(&json!({
-            "short_ref": "57",
+            "document_short_ref": "57",
             "date_from": "2026-01-01",
             "date_to": "2026-01-31",
             "document_types": ["invoice", 1, "receipt"],
@@ -1224,7 +1236,7 @@ mod tests {
         }))
         .unwrap();
 
-        assert_eq!(payload["short_ref"], "D000057");
+        assert_eq!(payload["document_short_ref"], "D000057");
         assert_eq!(payload["date_from"], "2026-01-01");
         assert_eq!(payload["date_to"], "2026-01-31");
         assert_eq!(payload["document_types"], json!(["INVOICE", "RECEIPT"]));
@@ -1242,7 +1254,7 @@ mod tests {
             profile_identifier: None,
             action_kind: AgentConfirmationActionKind::ExportDocuments,
             payload: json!({
-                "short_ref": "D000057",
+                "document_short_ref": "D000057",
                 "date_from": "2026-01-01",
                 "date_to": "2026-01-31",
                 "document_types": ["INVOICE"],
@@ -1253,7 +1265,7 @@ mod tests {
 
         let args = confirmation_export_args(&confirmation);
 
-        assert_eq!(args.short_ref.as_deref(), Some("D000057"));
+        assert_eq!(args.document_short_ref.as_deref(), Some("D000057"));
         assert_eq!(args.date_from.as_deref(), Some("2026-01-01"));
         assert_eq!(args.date_to.as_deref(), Some("2026-01-31"));
         assert_eq!(args.document_types, Some(vec!["INVOICE".to_string()]));

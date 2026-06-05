@@ -76,7 +76,7 @@ impl AgentTurnMetadata {
         if self.action_topic.is_none() {
             self.action_topic = action_topic_for_tool(tool_name).map(ToString::to_string);
         }
-        if let Some(short_ref) = args.get("short_ref").and_then(Value::as_str) {
+        if let Some(short_ref) = args.get("document_short_ref").and_then(Value::as_str) {
             push_unique(&mut self.returned_refs, normalize_short_ref_text(short_ref));
         }
     }
@@ -95,7 +95,7 @@ impl AgentTurnMetadata {
             .and_then(Value::as_array)
         {
             for item in items {
-                if let Some(short_ref) = item.get("short_ref").and_then(Value::as_str) {
+                if let Some(short_ref) = item.get("document_short_ref").and_then(Value::as_str) {
                     push_unique(&mut self.returned_refs, normalize_short_ref_text(short_ref));
                 }
             }
@@ -103,7 +103,7 @@ impl AgentTurnMetadata {
 
         if let Some(short_ref) = result
             .get("result")
-            .and_then(|value| value.get("short_ref"))
+            .and_then(|value| value.get("document_short_ref"))
             .and_then(Value::as_str)
         {
             push_unique(&mut self.returned_refs, normalize_short_ref_text(short_ref));
@@ -112,7 +112,7 @@ impl AgentTurnMetadata {
         if let Some(document_short_ref) = result
             .get("result")
             .and_then(|value| value.get("document"))
-            .and_then(|value| value.get("short_ref"))
+            .and_then(|value| value.get("document_short_ref"))
             .and_then(Value::as_str)
         {
             push_unique(
@@ -564,7 +564,10 @@ mod tests {
     fn note_tool_call_and_result_keep_action_topics_separate() {
         let mut metadata = AgentTurnMetadata::default();
 
-        metadata.note_tool_call("prepare_retry_document", &json!({"short_ref": "D000057"}));
+        metadata.note_tool_call(
+            "prepare_retry_document",
+            &json!({"document_short_ref": "D000057"}),
+        );
         metadata.note_tool_result(
             "prepare_retry_document",
             &json!({

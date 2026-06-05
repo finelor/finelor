@@ -55,7 +55,7 @@ If the user asks for “all documents” or implies full historical coverage, sa
 
 ## Drilldown Rule
 
-Use `get_document` only when the user explicitly asks for deeper inspection of one document or explicitly asks to confirm details for one specific `short_ref`.
+Use `get_document` only when the user explicitly asks for deeper inspection of one document or explicitly asks to confirm details for one specific `document_short_ref`.
 
 Do not use `get_document` across many documents as part of the default checklist flow.
 

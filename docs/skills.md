@@ -243,7 +243,7 @@ Example `references/rules.md`:
 Example `templates/response-template.md`:
 
 ```md
-## <short_ref>
+## <document_short_ref>
 Status: `<status>`
 
 - Check 1: complete or missing

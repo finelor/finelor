@@ -269,7 +269,7 @@ async fn mcp_capability_checks_fail_closed() {
             "method": "tools/call",
             "params": {
                 "name": "explain_document",
-                "arguments": { "short_ref": "D000001" }
+                "arguments": { "document_short_ref": "D000001" }
             }
         }),
         None,

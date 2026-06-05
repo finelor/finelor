@@ -114,7 +114,7 @@ mod tests {
             channel_identifier: "123".to_string(),
             profile_identifier: Some("456".to_string()),
             action_kind: AgentConfirmationActionKind::RetryDocument,
-            payload: json!({ "short_ref": "D000057" }),
+            payload: json!({ "document_short_ref": "D000057" }),
             expires_at: 123,
         };
 
@@ -124,7 +124,7 @@ mod tests {
             "37fd57d2-51d9-42a3-9bda-8d01f9ad03e1"
         );
         assert_eq!(value["action_kind"], "RETRY_DOCUMENT");
-        assert_eq!(value["payload"]["short_ref"], "D000057");
+        assert_eq!(value["payload"]["document_short_ref"], "D000057");
     }
 
     #[test]

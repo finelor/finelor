@@ -77,11 +77,11 @@ pub fn read_only_tool_catalog() -> Vec<AppToolDefinition> {
         },
         AppToolDefinition {
             name: "get_document",
-            description: "Get compact status/details for one company document by short_ref.",
+            description: "Get compact status/details for one company document by document_short_ref.",
             input_schema: json!({
                 "type": "object",
-                "properties": { "short_ref": { "type": "string" } },
-                "required": ["short_ref"],
+                "properties": { "document_short_ref": { "type": "string" } },
+                "required": ["document_short_ref"],
                 "additionalProperties": false
             }),
         },
@@ -90,8 +90,8 @@ pub fn read_only_tool_catalog() -> Vec<AppToolDefinition> {
             description: "Explain why one company document is blocked, pending, failed, or ready. Reuses the same logic as /why.",
             input_schema: json!({
                 "type": "object",
-                "properties": { "short_ref": { "type": "string" } },
-                "required": ["short_ref"],
+                "properties": { "document_short_ref": { "type": "string" } },
+                "required": ["document_short_ref"],
                 "additionalProperties": false
             }),
         },
@@ -149,21 +149,21 @@ pub fn mutating_prepare_tool_catalog() -> Vec<AppToolDefinition> {
     vec![
         AppToolDefinition {
             name: "prepare_open_review",
-            description: "Prepare a confirmation prompt to open review actions for one document by short_ref. Use only when the user explicitly asks to review or open review for a document.",
+            description: "Prepare a confirmation prompt to open review actions for one document by document_short_ref. Use only when the user explicitly asks to review or open review for a document.",
             input_schema: json!({
                 "type": "object",
-                "properties": { "short_ref": { "type": "string" } },
-                "required": ["short_ref"],
+                "properties": { "document_short_ref": { "type": "string" } },
+                "required": ["document_short_ref"],
                 "additionalProperties": false
             }),
         },
         AppToolDefinition {
             name: "prepare_retry_document",
-            description: "Prepare a confirmation prompt to retry or reprocess one document by short_ref. Use only when the user explicitly asks to retry or reprocess.",
+            description: "Prepare a confirmation prompt to retry or reprocess one document by document_short_ref. Use only when the user explicitly asks to retry or reprocess.",
             input_schema: json!({
                 "type": "object",
-                "properties": { "short_ref": { "type": "string" } },
-                "required": ["short_ref"],
+                "properties": { "document_short_ref": { "type": "string" } },
+                "required": ["document_short_ref"],
                 "additionalProperties": false
             }),
         },
@@ -173,7 +173,7 @@ pub fn mutating_prepare_tool_catalog() -> Vec<AppToolDefinition> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "short_ref": { "type": "string" },
+                    "document_short_ref": { "type": "string" },
                     "date_from": { "type": "string" },
                     "date_to": { "type": "string" },
                     "document_types": { "type": "array", "items": { "type": "string" } },
@@ -233,19 +233,19 @@ async fn execute_read_only_tool_inner(
             Ok(document_list_result(total_count, documents))
         }
         "get_document" => {
-            let short_ref = required_short_ref(&tool_call.args)?;
+            let short_ref = required_document_short_ref(&tool_call.args)?;
             let document = document_summary_by_short_ref(pool, &short_ref).await?;
             Ok(json!({
-                "short_ref": short_ref,
+                "document_short_ref": short_ref,
                 "document": document.as_ref().map(document_summary_json),
                 "found": document.is_some(),
             }))
         }
         "explain_document" => {
-            let short_ref = required_short_ref(&tool_call.args)?;
+            let short_ref = required_document_short_ref(&tool_call.args)?;
             let explanation = describe_document_why(pool, &short_ref).await?;
             Ok(json!({
-                "short_ref": short_ref,
+                "document_short_ref": short_ref,
                 "explanation": explanation,
             }))
         }
@@ -297,7 +297,7 @@ fn document_list_result(total_count: i64, documents: Vec<DocumentSummary>) -> se
 
 fn document_summary_json(document: &DocumentSummary) -> serde_json::Value {
     json!({
-        "short_ref": document.short_ref,
+        "document_short_ref": document.short_ref,
         "status": document.status,
         "supplier_name": document.supplier_name,
         "invoice_date": document.invoice_date,
@@ -313,12 +313,12 @@ fn limit_arg(args: &serde_json::Value) -> i64 {
         .clamp(1, MAX_LIST_LIMIT)
 }
 
-fn required_short_ref(args: &serde_json::Value) -> anyhow::Result<String> {
+fn required_document_short_ref(args: &serde_json::Value) -> anyhow::Result<String> {
     let raw = args
-        .get("short_ref")
+        .get("document_short_ref")
         .and_then(|value| value.as_str())
-        .ok_or_else(|| anyhow::anyhow!("missing required short_ref"))?;
-    normalize_short_ref(raw).ok_or_else(|| anyhow::anyhow!("invalid short_ref: {raw}"))
+        .ok_or_else(|| anyhow::anyhow!("missing required document_short_ref"))?;
+    normalize_short_ref(raw).ok_or_else(|| anyhow::anyhow!("invalid document_short_ref: {raw}"))
 }
 
 fn required_skill_name(args: &serde_json::Value) -> anyhow::Result<String> {
@@ -681,7 +681,7 @@ mod tests {
         let native = ToolCall {
             function: crate::inference::ToolCallFunction {
                 name: "get_document".to_string(),
-                arguments: json!({ "short_ref": "D57" }),
+                arguments: json!({ "document_short_ref": "D57" }),
             },
         };
         let tool_call = ReadOnlyToolCall::try_from(&native).expect("tool call");
@@ -690,7 +690,7 @@ mod tests {
             tool_call,
             ReadOnlyToolCall {
                 name: "get_document".to_string(),
-                args: json!({ "short_ref": "D57" }),
+                args: json!({ "document_short_ref": "D57" }),
             }
         );
     }
@@ -720,11 +720,15 @@ mod tests {
     }
 
     #[test]
-    fn validates_required_short_ref() {
-        let err = required_short_ref(&json!({})).expect_err("missing ref");
-        assert!(err.to_string().contains("missing required short_ref"));
+    fn validates_required_document_short_ref() {
+        let err = required_document_short_ref(&json!({})).expect_err("missing ref");
+        assert!(
+            err.to_string()
+                .contains("missing required document_short_ref")
+        );
 
-        let short_ref = required_short_ref(&json!({ "short_ref": "57" })).expect("short ref");
+        let short_ref =
+            required_document_short_ref(&json!({ "document_short_ref": "57" })).expect("short ref");
         assert_eq!(short_ref, "D000057");
     }
 
@@ -766,8 +770,8 @@ mod tests {
             json!({ "limit": 5 })
         );
         assert_eq!(
-            normalize_tool_arguments(&json!(r#"{ "short_ref": "D57" }"#)).unwrap(),
-            json!({ "short_ref": "D57" })
+            normalize_tool_arguments(&json!(r#"{ "document_short_ref": "D57" }"#)).unwrap(),
+            json!({ "document_short_ref": "D57" })
         );
         assert_eq!(normalize_tool_arguments(&json!("   ")).unwrap(), json!({}));
     }
@@ -795,13 +799,13 @@ mod tests {
         let native = ToolCall {
             function: crate::inference::ToolCallFunction {
                 name: "get_document".to_string(),
-                arguments: json!(r#"{ "short_ref": "D57" }"#),
+                arguments: json!(r#"{ "document_short_ref": "D57" }"#),
             },
         };
 
         let tool_call = ReadOnlyToolCall::try_from(&native).expect("tool call");
 
-        assert_eq!(tool_call.args, json!({ "short_ref": "D57" }));
+        assert_eq!(tool_call.args, json!({ "document_short_ref": "D57" }));
     }
 
     #[tokio::test]

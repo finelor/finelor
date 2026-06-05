@@ -173,7 +173,7 @@ async fn read_only_tools_return_workspace_documents() {
         None,
         &finelor::messaging::tools::ReadOnlyToolCall {
             name: "get_document".to_string(),
-            args: serde_json::json!({ "short_ref": pending_ref }),
+            args: serde_json::json!({ "document_short_ref": pending_ref }),
         },
     )
     .await;
@@ -190,11 +190,11 @@ async fn read_only_tools_return_workspace_documents() {
     )
     .await;
     assert_eq!(ready["ok"], true);
-    assert!(
-        ready["result"]["items"]
-            .as_array()
-            .is_some_and(|items| items.iter().any(|row| row["short_ref"] == ready_ref))
-    );
+    assert!(ready["result"]["items"].as_array().is_some_and(|items| {
+        items
+            .iter()
+            .any(|row| row["document_short_ref"] == ready_ref)
+    }));
 
     cleanup_documents(&pool, &[pending_id, ready_id]).await;
 }

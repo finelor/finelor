@@ -48,7 +48,7 @@ impl GatewayIntentKind {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct GatewayIntentArgs {
-    pub short_ref: Option<String>,
+    pub document_short_ref: Option<String>,
     pub date_from: Option<String>,
     pub date_to: Option<String>,
     pub document_types: Option<Vec<String>>,
@@ -107,23 +107,23 @@ pub fn parse_slash_intent(text: &str) -> Option<GatewayIntentResolution> {
         "ready" => GatewayIntentKind::Ready,
         "last" => GatewayIntentKind::Last,
         "why" => {
-            args.short_ref = parts.next().and_then(normalize_short_ref);
-            if args.short_ref.is_none() {
-                missing_args.push("short_ref".to_string());
+            args.document_short_ref = parts.next().and_then(normalize_short_ref);
+            if args.document_short_ref.is_none() {
+                missing_args.push("document_short_ref".to_string());
             }
             GatewayIntentKind::Why
         }
         "review" => {
-            args.short_ref = parts.next().and_then(normalize_short_ref);
-            if args.short_ref.is_none() {
-                missing_args.push("short_ref".to_string());
+            args.document_short_ref = parts.next().and_then(normalize_short_ref);
+            if args.document_short_ref.is_none() {
+                missing_args.push("document_short_ref".to_string());
             }
             GatewayIntentKind::Review
         }
         "retry" => {
-            args.short_ref = parts.next().and_then(normalize_short_ref);
-            if args.short_ref.is_none() {
-                missing_args.push("short_ref".to_string());
+            args.document_short_ref = parts.next().and_then(normalize_short_ref);
+            if args.document_short_ref.is_none() {
+                missing_args.push("document_short_ref".to_string());
             }
             GatewayIntentKind::Retry
         }
@@ -148,8 +148,8 @@ pub fn parse_model_intent_response(content: &str) -> anyhow::Result<GatewayInten
     let json = extract_json_from_response(content)?;
     let parsed: ModelIntentResolution = serde_json::from_value(json)?;
     let mut missing_args = parsed.missing_args;
-    if parsed.intent.requires_document_ref() && parsed.args.short_ref.is_none() {
-        missing_args.push("short_ref".to_string());
+    if parsed.intent.requires_document_ref() && parsed.args.document_short_ref.is_none() {
+        missing_args.push("document_short_ref".to_string());
         missing_args.sort();
         missing_args.dedup();
     }
@@ -158,9 +158,9 @@ pub fn parse_model_intent_response(content: &str) -> anyhow::Result<GatewayInten
         intent: parsed.intent,
         confidence: parsed.confidence.unwrap_or(0.0).clamp(0.0, 1.0),
         args: GatewayIntentArgs {
-            short_ref: parsed
+            document_short_ref: parsed
                 .args
-                .short_ref
+                .document_short_ref
                 .and_then(|value| normalize_short_ref(&value)),
             date_from: parsed.args.date_from,
             date_to: parsed.args.date_to,
@@ -185,14 +185,14 @@ pub fn build_intent_classifier_messages(text: &str) -> Vec<ChatMessage> {
             role: "system".to_string(),
             content: format!(
                 "Classify the user's message for Finelor's accounting agent.\n\
-                 Return JSON only with this shape: {{\"intent\":\"...\",\"confidence\":0.0,\"args\":{{\"short_ref\":null,\"date_from\":null,\"date_to\":null,\"document_types\":null,\"confidence_min\":null}},\"missing_args\":[],\"reason\":\"...\"}}.\n\
+                 Return JSON only with this shape: {{\"intent\":\"...\",\"confidence\":0.0,\"args\":{{\"document_short_ref\":null,\"date_from\":null,\"date_to\":null,\"document_types\":null,\"confidence_min\":null}},\"missing_args\":[],\"reason\":\"...\"}}.\n\
                  Use one of these intents:\n{intents}\n\
                  Rules:\n\
                  - Use out_of_scope for requests unrelated to Finelor, invoices, receipts, accounting workflow, exports, document review, uploads, or company accounting data.\n\
                  - Use general_accounting_chat for in-scope conversational questions that are not executable commands.\n\
                  - Extract document references like D123 as D000123.\n\
-                 - If the user asks for the status of a specific document reference, use intent=status and include args.short_ref.\n\
-                 - For why, review, and retry, include missing_args=[\"short_ref\"] if no document reference is present.\n\
+                 - If the user asks for the status of a specific document reference, use intent=status and include args.document_short_ref.\n\
+                 - For why, review, and retry, include missing_args=[\"document_short_ref\"] if no document reference is present.\n\
                  - Do not answer the user."
             ),
         },
@@ -343,8 +343,8 @@ fn parse_export_args(text: &str) -> GatewayIntentArgs {
             document_types.push(value.to_ascii_uppercase());
         } else if let Some(value) = token.strip_prefix("confidence:") {
             args.confidence_min = value.parse::<f64>().ok();
-        } else if args.short_ref.is_none() {
-            args.short_ref = normalize_short_ref(token);
+        } else if args.document_short_ref.is_none() {
+            args.document_short_ref = normalize_short_ref(token);
         }
     }
 
@@ -379,7 +379,7 @@ mod tests {
     fn parses_document_ref_command() {
         let parsed = parse_slash_intent("/why d12").unwrap();
         assert_eq!(parsed.intent, GatewayIntentKind::Why);
-        assert_eq!(parsed.args.short_ref.as_deref(), Some("D000012"));
+        assert_eq!(parsed.args.document_short_ref.as_deref(), Some("D000012"));
         assert!(parsed.missing_args.is_empty());
     }
 
@@ -387,7 +387,7 @@ mod tests {
     fn marks_missing_document_ref() {
         let parsed = parse_slash_intent("/review").unwrap();
         assert_eq!(parsed.intent, GatewayIntentKind::Review);
-        assert_eq!(parsed.missing_args, vec!["short_ref"]);
+        assert_eq!(parsed.missing_args, vec!["document_short_ref"]);
     }
 
     #[test]
@@ -398,7 +398,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(parsed.intent, GatewayIntentKind::Export);
-        assert_eq!(parsed.args.short_ref.as_deref(), Some("D000012"));
+        assert_eq!(parsed.args.document_short_ref.as_deref(), Some("D000012"));
         assert_eq!(parsed.args.date_from.as_deref(), Some("2026-01-01"));
         assert_eq!(parsed.args.date_to.as_deref(), Some("2026-01-31"));
         assert_eq!(
@@ -425,13 +425,13 @@ mod tests {
         let parsed = parse_model_intent_response(
             r#"Here is the classification:
 ```json
-{"intent":"status","confidence":0.93,"args":{"short_ref":"D57"},"missing_args":[],"reason":"asks for a document status"}
+{"intent":"status","confidence":0.93,"args":{"document_short_ref":"D57"},"missing_args":[],"reason":"asks for a document status"}
 ```"#,
         )
         .unwrap();
 
         assert_eq!(parsed.intent, GatewayIntentKind::Status);
-        assert_eq!(parsed.args.short_ref.as_deref(), Some("D000057"));
+        assert_eq!(parsed.args.document_short_ref.as_deref(), Some("D000057"));
     }
 
     #[test]

@@ -45,7 +45,11 @@ pub async fn execute_gateway_intent(
         ));
     }
 
-    if resolution.missing_args.iter().any(|arg| arg == "short_ref") {
+    if resolution
+        .missing_args
+        .iter()
+        .any(|arg| arg == "document_short_ref")
+    {
         return Ok(GatewayMessageResponse::text(format!(
             "Please include a document reference, for example /{} D000123.",
             resolution.intent.as_str()
@@ -55,7 +59,7 @@ pub async fn execute_gateway_intent(
     match resolution.intent {
         GatewayIntentKind::Help => Ok(GatewayMessageResponse::text(build_help_message())),
         GatewayIntentKind::Status => Ok(GatewayMessageResponse::text(
-            if let Some(short_ref) = resolution.args.short_ref.as_deref() {
+            if let Some(short_ref) = resolution.args.document_short_ref.as_deref() {
                 build_document_status_message(&state.pool, short_ref).await?
             } else {
                 build_status_message(&state.pool).await?
@@ -80,7 +84,7 @@ pub async fn execute_gateway_intent(
             build_last_message(&state.pool).await?,
         )),
         GatewayIntentKind::Why => {
-            let Some(short_ref) = resolution.args.short_ref.as_deref() else {
+            let Some(short_ref) = resolution.args.document_short_ref.as_deref() else {
                 return Ok(GatewayMessageResponse::text("Usage: /why D000123"));
             };
             Ok(GatewayMessageResponse::text(
@@ -88,13 +92,13 @@ pub async fn execute_gateway_intent(
             ))
         }
         GatewayIntentKind::Review => {
-            let Some(short_ref) = resolution.args.short_ref.as_deref() else {
+            let Some(short_ref) = resolution.args.document_short_ref.as_deref() else {
                 return Ok(GatewayMessageResponse::text("Usage: /review D000123"));
             };
             reopen_review_actions(&state.pool, short_ref).await
         }
         GatewayIntentKind::Retry => {
-            let Some(short_ref) = resolution.args.short_ref.as_deref() else {
+            let Some(short_ref) = resolution.args.document_short_ref.as_deref() else {
                 return Ok(GatewayMessageResponse::text("Usage: /retry D000123"));
             };
             Ok(GatewayMessageResponse::text(
@@ -578,7 +582,7 @@ pub(crate) async fn export_documents(
     workspace_id: Uuid,
     args: &GatewayIntentArgs,
 ) -> anyhow::Result<GatewayMessageResponse> {
-    if let Some(short_ref) = args.short_ref.as_deref()
+    if let Some(short_ref) = args.document_short_ref.as_deref()
         && document_ref_by_short_ref(&state.pool, short_ref)
             .await?
             .is_none()
@@ -607,7 +611,7 @@ pub(crate) async fn export_documents(
             date_to: parse_date(args.date_to.as_deref()),
             document_types: args.document_types.clone(),
             confidence_min: args.confidence_min,
-            short_refs: args.short_ref.clone().map(|value| vec![value]),
+            short_refs: args.document_short_ref.clone().map(|value| vec![value]),
         })
         .await
     {
@@ -615,7 +619,7 @@ pub(crate) async fn export_documents(
         Err(err) => {
             let error_text = err.to_string();
             let response = if error_text.contains("No documents ready for export") {
-                if let Some(short_ref) = args.short_ref.as_deref() {
+                if let Some(short_ref) = args.document_short_ref.as_deref() {
                     match document_ref_by_short_ref(&state.pool, short_ref).await? {
                         Some(document) => format!(
                             "{} is not currently in your export pool. Current status: {}.",
@@ -627,7 +631,7 @@ pub(crate) async fn export_documents(
                     "No documents are currently ready in your export pool.".to_string()
                 }
             } else if error_text.contains("No exportable documents found") {
-                if let Some(short_ref) = args.short_ref.as_deref() {
+                if let Some(short_ref) = args.document_short_ref.as_deref() {
                     format!(
                         "{} is in your export pool but cannot be exported yet because its accounting data is incomplete.",
                         short_ref
@@ -642,7 +646,7 @@ pub(crate) async fn export_documents(
         }
     };
 
-    let headline = if let Some(short_ref) = args.short_ref.as_deref() {
+    let headline = if let Some(short_ref) = args.document_short_ref.as_deref() {
         format!("Export complete for {}.", short_ref)
     } else {
         "Export complete.".to_string()

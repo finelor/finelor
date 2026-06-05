@@ -48,7 +48,7 @@ If the user needs a full historical dataset, be explicit that the current tool s
    - `status` for reporting context
 3. Build one checklist block per document rather than one combined grid table.
 4. Mark each checklist item clearly as complete or missing.
-5. Include the document `short_ref` and `status` at the top of each checklist block.
+5. Include the document `document_short_ref` and `status` at the top of each checklist block.
 6. Use simple deterministic wording for missing data, such as `Missing supplier name`.
 7. If the user asks for “all documents” or otherwise implies full coverage, include a short limitation note that this checklist reflects the recent documents currently accessible through tools, not a guaranteed full workspace-wide audit.
 8. If the user explicitly asks to inspect one document more closely, confirm a specific field on one document, or continue from a checklist result into document-level detail, optionally call `get_document` for that one document.

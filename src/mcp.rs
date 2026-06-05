@@ -71,8 +71,8 @@ pub struct ListDocumentsArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct DocumentRefArgs {
-    #[schemars(description = "Finelor document short reference, for example D000123.")]
-    pub short_ref: String,
+    #[schemars(description = "Finelor document reference, for example D000123.")]
+    pub document_short_ref: String,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -118,7 +118,7 @@ impl FinelorMcpServer {
         .await
     }
 
-    #[tool(description = "Get compact status and document details by short_ref.")]
+    #[tool(description = "Get compact status and document details by document_short_ref.")]
     pub async fn get_document(
         &self,
         context: RequestContext<RoleServer>,
@@ -129,7 +129,7 @@ impl FinelorMcpServer {
             CAP_DOCUMENTS_READ,
             ReadOnlyToolCall {
                 name: "get_document".to_string(),
-                args: json!({ "short_ref": args.short_ref }),
+                args: json!({ "document_short_ref": args.document_short_ref }),
             },
         )
         .await
@@ -146,7 +146,7 @@ impl FinelorMcpServer {
             CAP_DOCUMENTS_EXPLAIN,
             ReadOnlyToolCall {
                 name: "explain_document".to_string(),
-                args: json!({ "short_ref": args.short_ref }),
+                args: json!({ "document_short_ref": args.document_short_ref }),
             },
         )
         .await
