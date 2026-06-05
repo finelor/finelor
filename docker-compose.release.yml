@@ -17,7 +17,15 @@ services:
       - ./config.yaml:/app/config.yaml:ro
       - finelor_runtime:/app/.finelor
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://localhost:3000/health",
+        ]
       interval: 10s
       timeout: 5s
       retries: 5

@@ -64,7 +64,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"], optio
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
 dotenvy = { version = "0.15", optional = true }
 image = { version = "0.25", optional = true }
-tempfile = { version = "3", optional = true }
 backoff = { version = "0.4.0", features = ["tokio"], optional = true }
 tokio = { version = "1", features = ["full"], optional = true }
 tokio-stream = { version = "0.1", features = ["sync"], optional = true }
@@ -106,7 +105,6 @@ ssr = [
     "dep:reqwest",
     "dep:dotenvy",
     "dep:image",
-    "dep:tempfile",
     "dep:backoff",
     "dep:tokio",
     "dep:tokio-stream",
@@ -133,9 +131,5 @@ hydrate = [
 ]
 
 [dev-dependencies]
-tokio-test = "0.4"
 wiremock = "0.6"
-http = "1.0"
-futures = "0.3"
 tower = "0.5"
-serde = { version = "1.0", features = ["derive"] }

@@ -27,12 +27,12 @@ COPY . .
 RUN --mount=type=cache,target=/app/target \
     --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git/db \
-    cargo leptos build
+    cargo leptos build --release
 
 # Move the generated outputs out of the cache mount so later stages can copy them.
 RUN --mount=type=cache,target=/app/target \
     mkdir -p /artifacts \
-    && cp /app/target/debug/finelor /artifacts/finelor \
+    && cp /app/target/release/finelor /artifacts/finelor \
     && cp -a /app/target/site /artifacts/site
 
 
@@ -42,6 +42,8 @@ RUN --mount=type=cache,target=/app/target \
 #############################
 
 FROM debian:bookworm-slim AS runtime
+LABEL org.opencontainers.image.source=https://github.com/finelor/finelor
+
 WORKDIR /app
 
 # Install runtime CA certificates and wget for local health checks.
@@ -58,4 +60,19 @@ COPY migrations ./migrations
 COPY assets ./assets
 COPY config.yaml ./config.yaml
 
+CMD ["finelor"]
+
+
+
+##############################
+####    HOSTINGER STAGE    ####
+##############################
+
+FROM runtime AS hostinger
+
+# Add the Hostinger-specific entrypoint wrapper.
+COPY deploy/hostinger/entrypoint.sh /usr/local/bin/finelor-hostinger-entrypoint
+RUN chmod 0755 /usr/local/bin/finelor-hostinger-entrypoint
+
+ENTRYPOINT ["finelor-hostinger-entrypoint"]
 CMD ["finelor"]
