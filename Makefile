@@ -94,7 +94,7 @@ bootstrap-local: ## Install rustup, repo-pinned toolchain/target, cargo-binstall
 	rustup --version | head -n 1; \
 	rustc --version; \
 	cargo --version; \
-	cargo-binstall --version; \
+	cargo-binstall -V; \
 	cargo leptos --version
 
 sweep: ## Prune old build artifacts to reclaim disk
