@@ -820,7 +820,7 @@ pub async fn get_document_details(
         mime_type: r.try_get("mime_type").ok(),
         original_path: r.try_get("original_path").ok(),
         image_url: Some(format!(
-            "/api/documents/{}/image",
+            "/_documents/{}/image",
             r.try_get::<String, _>("short_ref").unwrap_or_default()
         )),
         supplier_name: r.try_get("supplier_name").ok(),
