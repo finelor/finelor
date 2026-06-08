@@ -43,7 +43,7 @@ pub struct SkillMetadata {
     pub file_globs: Option<Vec<String>>,
     /// Additional arbitrary metadata as key-value pairs
     #[serde(flatten)]
-    pub extra: HashMap<String, serde_yaml::Value>,
+    pub extra: HashMap<String, String>,
 }
 
 /// Represents a reference file (markdown document)

@@ -599,6 +599,12 @@ file_extensions:
         .expect("write skill");
     }
 
+    fn write_raw_skill(root: &TempDir, id: &str, contents: &str) {
+        let skill_dir = root.path().join(id);
+        std::fs::create_dir_all(&skill_dir).expect("skill dir");
+        std::fs::write(skill_dir.join("SKILL.md"), contents).expect("write raw skill");
+    }
+
     #[tokio::test]
     async fn test_skill_registry_basic_operations() {
         let registry = SkillRegistry::new();
@@ -887,6 +893,70 @@ category: ops
             .get_skill_by_name("Alpha")
             .await
             .expect("old registry state should remain available");
+        assert_eq!(by_name.id.0, "alpha-skill");
+    }
+
+    #[tokio::test]
+    async fn test_registry_initialize_ignores_invalid_skills_and_keeps_valid_ones() {
+        let root = tempfile::tempdir().expect("tempdir");
+        write_raw_skill(
+            &root,
+            "alpha-skill",
+            r#"---
+name: Alpha Skill
+description: Alpha
+category: ops
+custom_scalar: plain-text
+custom_mapping:
+  team: platform
+  enabled: true
+---
+# Alpha
+"#,
+        );
+        std::fs::create_dir_all(root.path().join("missing-markdown")).expect("invalid dir");
+        write_raw_skill(
+            &root,
+            "bad-frontmatter",
+            r#"---
+name: Broken Skill
+description: Missing category
+---
+# Broken
+"#,
+        );
+
+        let registry = SkillRegistry::with_dir(root.path());
+        registry
+            .initialize()
+            .await
+            .expect("registry should still initialize with valid skills");
+
+        let all_skills = registry.get_all_skills().await;
+        assert_eq!(all_skills.len(), 1);
+        assert_eq!(all_skills[0].id.0, "alpha-skill");
+        assert_eq!(all_skills[0].name(), "Alpha Skill");
+        assert_eq!(
+            all_skills[0]
+                .metadata
+                .extra
+                .get("custom_scalar")
+                .map(String::as_str),
+            Some("plain-text")
+        );
+        assert_eq!(
+            all_skills[0]
+                .metadata
+                .extra
+                .get("custom_mapping")
+                .map(String::as_str),
+            Some("team: platform\nenabled: true")
+        );
+
+        let by_name = registry
+            .get_skill_by_name("Alpha Skill")
+            .await
+            .expect("valid skill should still be indexed");
         assert_eq!(by_name.id.0, "alpha-skill");
     }
 

@@ -66,9 +66,9 @@ bootstrap-local: ## Install rustup, repo-pinned toolchain/target, cargo-binstall
 		echo "rustup not found; installing rustup..."; \
 		curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal; \
 	fi; \
-	export PATH="$$HOME/.cargo/bin:$$PATH"; \
 	cargo_home=$${CARGO_HOME:-$$HOME/.cargo}; \
 	mkdir -p "$$cargo_home/bin"; \
+	export PATH="$$cargo_home/bin:$$PATH"; \
 	echo "Ensuring wasm32-unknown-unknown target is installed..."; \
 	rustup target add wasm32-unknown-unknown; \
 	tmp_dir=$$(mktemp -d); \

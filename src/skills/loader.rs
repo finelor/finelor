@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use yaml_rust2::{Yaml, YamlEmitter};
+
 use crate::skills::types::{
     Skill, SkillError, SkillId, SkillMetadata, SkillReference, SkillResult, SkillTemplate,
 };
@@ -300,12 +302,12 @@ impl SkillLoader {
                     "file_globs",
                 ];
                 if !known_fields.contains(&key_str) {
-                    // Convert yaml_rust2::Yaml to serde_yaml::Value
-                    // First convert to string representation, then parse
-                    let yaml_str = format!("{:?}", value);
-                    if let Ok(yaml_val) = serde_yaml::from_str(&yaml_str) {
-                        extra.insert(key_str.to_string(), yaml_val);
-                    }
+                    let yaml_str = Self::emit_yaml_value(value).map_err(|e| {
+                        SkillError::InvalidFrontmatter(format!(
+                            "Failed to preserve extra field `{key_str}` as raw YAML: {e}"
+                        ))
+                    })?;
+                    extra.insert(key_str.to_string(), yaml_str);
                 }
             }
         }
@@ -322,6 +324,20 @@ impl SkillLoader {
             file_globs,
             extra,
         })
+    }
+
+    fn emit_yaml_value(value: &Yaml) -> SkillResult<String> {
+        let mut output = String::new();
+        YamlEmitter::new(&mut output)
+            .dump(value)
+            .map_err(|e| SkillError::InvalidFrontmatter(e.to_string()))?;
+
+        Ok(output
+            .strip_prefix("---\n")
+            .or_else(|| output.strip_prefix("---\r\n"))
+            .unwrap_or(&output)
+            .trim_end_matches(['\r', '\n'])
+            .to_string())
     }
 
     /// Load reference files from the references/ subdirectory
@@ -520,6 +536,37 @@ description: "uses --- inside metadata""#;
         assert!(err.to_string().contains("Missing closing ---"));
     }
 
+    #[test]
+    fn parse_frontmatter_preserves_unknown_extra_fields_as_raw_yaml() {
+        let metadata = SkillLoader::parse_frontmatter(
+            r#"name: test
+description: test description
+category: accounting
+custom_scalar: plain-text
+custom_sequence:
+  - one
+  - two
+custom_mapping:
+  nested: value
+  enabled: true
+"#,
+        )
+        .expect("frontmatter should parse");
+
+        assert_eq!(
+            metadata.extra.get("custom_scalar").map(String::as_str),
+            Some("plain-text")
+        );
+        assert_eq!(
+            metadata.extra.get("custom_sequence").map(String::as_str),
+            Some("- one\n- two")
+        );
+        assert_eq!(
+            metadata.extra.get("custom_mapping").map(String::as_str),
+            Some("nested: value\nenabled: true")
+        );
+    }
+
     #[tokio::test]
     async fn load_skill_reads_complete_skill_with_references_and_templates() {
         let root = create_temp_skill_root();
@@ -541,6 +588,13 @@ file_extensions:
   - pdf
 file_globs:
   - "*.pdf"
+custom_scalar: plain-text
+custom_sequence:
+  - review
+  - export
+custom_mapping:
+  region: eu
+  priority: high
 ---
 # Invoice Helper
 
@@ -585,6 +639,30 @@ Example content.
         assert_eq!(
             skill.metadata.file_globs.as_ref().expect("globs"),
             &vec!["*.pdf".to_string()]
+        );
+        assert_eq!(
+            skill
+                .metadata
+                .extra
+                .get("custom_scalar")
+                .map(String::as_str),
+            Some("plain-text")
+        );
+        assert_eq!(
+            skill
+                .metadata
+                .extra
+                .get("custom_sequence")
+                .map(String::as_str),
+            Some("- review\n- export")
+        );
+        assert_eq!(
+            skill
+                .metadata
+                .extra
+                .get("custom_mapping")
+                .map(String::as_str),
+            Some("region: eu\npriority: high")
         );
         assert!(skill.content.contains("Create invoices carefully."));
         assert!(skill.content.contains("Ask questions"));
