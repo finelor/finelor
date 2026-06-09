@@ -245,7 +245,7 @@ async fn chat_with_tools_parses_tool_calls() {
                 "tool_calls": [{
                     "function": {
                         "name": "get_document",
-                        "arguments": { "short_ref": "D000001" }
+                        "arguments": { "document_short_ref": "D000001" }
                     }
                 }]
             },
@@ -280,5 +280,5 @@ async fn chat_with_tools_parses_tool_calls() {
 
     let calls = response.message.tool_calls.expect("tool calls");
     assert_eq!(calls[0].function.name, "get_document");
-    assert_eq!(calls[0].function.arguments["short_ref"], "D000001");
+    assert_eq!(calls[0].function.arguments["document_short_ref"], "D000001");
 }

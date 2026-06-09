@@ -24,6 +24,7 @@ Start the Hostinger Docker VPS setup for Finelor from the prebuilt `ghcr.io/fine
 - export to accounting systems
 - human-in-the-loop clarifications
 - intelligent conversational support through Telegram and Slack
+- skills system for reusable assistant workflows and capability-specific guidance
 - web-based control panel app
 - and many more coming soon
 
@@ -184,7 +185,7 @@ make test-integration
 
 Join the Discord community:
 
-- Discord: [``https://discord.gg/Fvydsb8j8x``](https://discord.gg/Fvydsb8j8x)
+- Discord: [`https://discord.gg/mCGTqGuXc8`](https://discord.gg/mCGTqGuXc8)
 
 ## License
 

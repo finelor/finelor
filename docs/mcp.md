@@ -214,7 +214,7 @@ Available tools:
 | --- | --- | --- |
 | `document_status_summary` | `documents:read` | Returns exact document counts by processing status. |
 | `list_documents` | `documents:read` | Lists recent documents with exact total count and compact items. |
-| `get_document` | `documents:read` | Returns compact status/details for one document by `short_ref`. |
+| `get_document` | `documents:read` | Returns compact status/details for one document by `document_short_ref`. |
 | `explain_document` | `documents:explain` | Explains why one document is blocked, pending, failed, or ready. |
 
 Not exposed in this version:
@@ -254,7 +254,7 @@ Fields:
 
 ```json
 {
-  "short_ref": "D000123"
+  "document_short_ref": "D000123"
 }
 ```
 
@@ -262,13 +262,13 @@ Fields:
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `short_ref` | string | Finelor document reference. Numeric shorthand may be normalized by Finelor where supported. |
+| `document_short_ref` | string | Finelor document reference. Numeric shorthand may be normalized by Finelor where supported. |
 
 ### explain_document
 
 ```json
 {
-  "short_ref": "D000123"
+  "document_short_ref": "D000123"
 }
 ```
 
@@ -276,7 +276,7 @@ Fields:
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `short_ref` | string | Finelor document reference. Numeric shorthand may be normalized by Finelor where supported. |
+| `document_short_ref` | string | Finelor document reference. Numeric shorthand may be normalized by Finelor where supported. |
 
 ## Capabilities
 

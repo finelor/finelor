@@ -69,33 +69,33 @@ bootstrap-local: ## Install rustup, repo-pinned toolchain/target, cargo-binstall
 	cargo_home=$${CARGO_HOME:-$$HOME/.cargo}; \
 	mkdir -p "$$cargo_home/bin"; \
 	export PATH="$$cargo_home/bin:$$PATH"; \
-	if [ -n "$${GITHUB_PATH:-}" ]; then \
-		printf '%s\n' "$$cargo_home/bin" >> "$$GITHUB_PATH"; \
-	fi; \
-	channel=$$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml | head -n 1); \
-	if [ -z "$$channel" ]; then \
-		echo "Failed to read toolchain channel from rust-toolchain.toml"; \
-		exit 1; \
-	fi; \
-	components=$$(sed -n 's/^components = \[\(.*\)\]/\1/p' rust-toolchain.toml | tr -d '"' | tr ',' ' '); \
-	echo "Installing Rust toolchain $$channel with components: $$components"; \
-	rustup toolchain install "$$channel" --profile minimal $$(for c in $$components; do printf -- '--component %s ' "$$c"; done); \
-	rustup target add wasm32-unknown-unknown --toolchain "$$channel"; \
+	echo "Ensuring wasm32-unknown-unknown target is installed..."; \
+	rustup target add wasm32-unknown-unknown; \
 	tmp_dir=$$(mktemp -d); \
 	trap 'rm -rf "$$tmp_dir"' EXIT; \
-	echo "Installing cargo-binstall from prebuilt release..."; \
-	curl -L --proto '=https' --tlsv1.2 -sSf \
-		https://github.com/cargo-bins/cargo-binstall/releases/latest/download/cargo-binstall-x86_64-unknown-linux-musl.tgz \
-		-o "$$tmp_dir/cargo-binstall.tgz"; \
-	tar -xzf "$$tmp_dir/cargo-binstall.tgz" -C "$$tmp_dir"; \
-	install -m 0755 "$$tmp_dir/cargo-binstall" "$$cargo_home/bin/cargo-binstall"; \
+	if ! command -v cargo-binstall >/dev/null 2>&1; then \
+		echo "Installing cargo-binstall from prebuilt release..."; \
+		curl -L --proto '=https' --tlsv1.2 -sSf \
+			https://github.com/cargo-bins/cargo-binstall/releases/latest/download/cargo-binstall-x86_64-unknown-linux-musl.tgz \
+			-o "$$tmp_dir/cargo-binstall.tgz"; \
+		tar -xzf "$$tmp_dir/cargo-binstall.tgz" -C "$$tmp_dir"; \
+		install -m 0755 "$$tmp_dir/cargo-binstall" "$$cargo_home/bin/cargo-binstall"; \
+	else \
+		echo "cargo-binstall already installed; skipping install."; \
+	fi; \
 	installed_leptos_version=$$(cargo leptos --version 2>/dev/null | awk '{print $$2}' || true); \
 	if [ "$$installed_leptos_version" = "$(CARGO_LEPTOS_VERSION)" ]; then \
 		echo "cargo-leptos v$(CARGO_LEPTOS_VERSION) already installed; skipping install."; \
 	else \
 		echo "Installing cargo-leptos v$(CARGO_LEPTOS_VERSION) via cargo-binstall..."; \
-		cargo +"$$channel" binstall -y cargo-leptos@$(CARGO_LEPTOS_VERSION); \
-	fi
+		cargo binstall -y cargo-leptos@$(CARGO_LEPTOS_VERSION); \
+	fi; \
+	echo "Tool versions:"; \
+	rustup --version | head -n 1; \
+	rustc --version; \
+	cargo --version; \
+	cargo-binstall -V; \
+	cargo leptos --version
 
 sweep: ## Prune old build artifacts to reclaim disk
 	@echo "Disk before:"

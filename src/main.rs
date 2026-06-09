@@ -78,7 +78,10 @@ impl FromRef<AppState> for finelor::api::PublicApiState {
     }
 }
 
-fn agent_gateway_state(state: &AppState) -> AgentGatewayState {
+fn agent_gateway_state(
+    state: &AppState,
+    skills_registry: Arc<finelor::skills::SkillRegistry>,
+) -> AgentGatewayState {
     AgentGatewayState {
         config: state.config.clone(),
         pool: state.pool.clone(),
@@ -87,11 +90,15 @@ fn agent_gateway_state(state: &AppState) -> AgentGatewayState {
         events: state.events.clone(),
         running_sessions: state.running_agent_sessions.clone(),
         active_document_interaction_sessions: state.active_document_interaction_sessions.clone(),
+        skills_registry,
     }
 }
 
-fn spawn_gateway_event_dispatcher(state: AppState) {
-    let gateway_state = agent_gateway_state(&state);
+fn spawn_gateway_event_dispatcher(
+    state: AppState,
+    skills_registry: Arc<finelor::skills::SkillRegistry>,
+) {
+    let gateway_state = agent_gateway_state(&state, skills_registry);
     tokio::spawn(async move {
         let mut dispatcher =
             finelor::messaging::dispatch::GatewayEventDispatcher::new(gateway_state.clone());
@@ -191,6 +198,21 @@ async fn main() -> anyhow::Result<()> {
         .with_always_save(true)
         .with_signed(session_cookie_key(config.session.secret.as_str())?);
 
+    let skills_registry = Arc::new(finelor::skills::SkillRegistry::new());
+    if let Err(e) = skills_registry.initialize().await {
+        error!(
+            error = %e,
+            "Failed to initialize skills registry - skill-based features may not work"
+        );
+    } else {
+        let skills = skills_registry.get_all_skills().await;
+        info!(
+            count = skills.len(),
+            skill_names = ?skills.iter().map(|s| s.name().to_string()).collect::<Vec<_>>(),
+            "Skills registry initialized successfully"
+        );
+    }
+
     let app_state = AppState {
         config: config.clone(),
         pool: pool.clone(),
@@ -202,7 +224,7 @@ async fn main() -> anyhow::Result<()> {
         active_document_interaction_sessions: Arc::new(Mutex::new(HashSet::new())),
     };
 
-    let api = build_router(&app_state)
+    let api = build_router(&app_state, skills_registry.clone())
         .layer(session_layer)
         .with_state(app_state.clone());
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
@@ -222,7 +244,7 @@ async fn main() -> anyhow::Result<()> {
         {
             let bot = Bot::new(config.messaging.telegram.bot_token.clone());
             finelor::messaging::adapters::telegram::register_telegram_command_menu(&bot).await?;
-            spawn_gateway_event_dispatcher(app_state.clone());
+            spawn_gateway_event_dispatcher(app_state.clone(), skills_registry.clone());
             configure_telegram_webhook(config.as_ref()).await?;
             info!("Telegram webhook delivery configured; long polling disabled");
             tokio::spawn(async { pending::<anyhow::Result<()>>().await })
@@ -230,11 +252,12 @@ async fn main() -> anyhow::Result<()> {
         MessagingProvider::Telegram => {
             let bot = Bot::new(config.messaging.telegram.bot_token.clone());
             let bot_state = app_state.clone();
-            tokio::spawn(run_bot(bot, bot_state))
+            let bot_skills_registry = skills_registry.clone();
+            tokio::spawn(run_bot(bot, bot_state, bot_skills_registry))
         }
         MessagingProvider::Slack => {
-            spawn_gateway_event_dispatcher(app_state.clone());
-            let state = agent_gateway_state(&app_state);
+            spawn_gateway_event_dispatcher(app_state.clone(), skills_registry.clone());
+            let state = agent_gateway_state(&app_state, skills_registry.clone());
             tokio::spawn(async move {
                 finelor::messaging::adapters::slack::run_slack_socket_mode(state).await
             })
@@ -446,7 +469,10 @@ fn session_cookie_key(secret: &str) -> anyhow::Result<Key> {
     Ok(Key::from(secret.as_bytes()))
 }
 
-fn build_router(state: &AppState) -> Router<AppState> {
+fn build_router(
+    state: &AppState,
+    skills_registry: Arc<finelor::skills::SkillRegistry>,
+) -> Router<AppState> {
     let site_root = state.leptos_options.site_root.to_string();
     let site_pkg_dir = state.leptos_options.site_pkg_dir.to_string();
     let pkg_path = std::path::Path::new(&site_root).join(&site_pkg_dir);
@@ -464,7 +490,21 @@ fn build_router(state: &AppState) -> Router<AppState> {
                 finelor::security::validate_origin,
             )),
         )
-        .route("/webhooks/telegram", post(telegram_webhook_handler))
+        .route(
+            "/webhooks/telegram",
+            post({
+                let skills_registry = skills_registry.clone();
+                move |State(state): State<AppState>,
+                      headers: HeaderMap,
+                      Json(update): Json<Update>| {
+                    let skills_registry = skills_registry.clone();
+                    async move {
+                        let gateway_state = agent_gateway_state(&state, skills_registry);
+                        telegram_webhook_handler(state, headers, update, gateway_state).await
+                    }
+                }
+            }),
+        )
         .route(
             "/_server_fn/{*fn_name}",
             post(leptos_axum::handle_server_fns).route_layer(axum::middleware::from_fn_with_state(
@@ -534,9 +574,10 @@ fn sse_event(event: AppEvent) -> Event {
 }
 
 async fn telegram_webhook_handler(
-    State(state): State<AppState>,
+    state: AppState,
     headers: HeaderMap,
-    Json(update): Json<Update>,
+    update: Update,
+    gateway_state: AgentGatewayState,
 ) -> Result<StatusCode, (StatusCode, String)> {
     if state.config.messaging.provider != MessagingProvider::Telegram {
         return Err((
@@ -547,21 +588,25 @@ async fn telegram_webhook_handler(
     verify_telegram_webhook_secret(&state, &headers)?;
 
     let bot = Bot::new(state.config.messaging.telegram.bot_token.clone());
-    finelor::messaging::adapters::telegram::handle_telegram_update(
-        bot,
-        update,
-        agent_gateway_state(&state),
-    )
-    .await
-    .map_err(|err| {
-        error!(error = %err, "Telegram webhook update handling failed");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Telegram update handling failed".to_string(),
-        )
-    })?;
+    process_telegram_webhook_update(bot, update, gateway_state).await?;
 
     Ok(StatusCode::OK)
+}
+
+async fn process_telegram_webhook_update(
+    bot: Bot,
+    update: Update,
+    gateway_state: AgentGatewayState,
+) -> Result<(), (StatusCode, String)> {
+    finelor::messaging::adapters::telegram::handle_telegram_update(bot, update, gateway_state)
+        .await
+        .map_err(|err| {
+            error!(error = %err, "Telegram webhook update handling failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Telegram update handling failed".to_string(),
+            )
+        })
 }
 
 fn verify_telegram_webhook_secret(
@@ -682,13 +727,17 @@ async fn require_authenticated_session(
     }
 }
 
-async fn run_bot(bot: Bot, state: AppState) -> anyhow::Result<()> {
+async fn run_bot(
+    bot: Bot,
+    state: AppState,
+    skills_registry: Arc<finelor::skills::SkillRegistry>,
+) -> anyhow::Result<()> {
     use teloxide::dispatching::{Dispatcher, UpdateFilterExt};
 
     clear_telegram_webhook_for_polling(&bot, state.config.messaging.telegram.bot_token.as_str())
         .await?;
     finelor::messaging::adapters::telegram::register_telegram_command_menu(&bot).await?;
-    spawn_gateway_event_dispatcher(state.clone());
+    spawn_gateway_event_dispatcher(state.clone(), skills_registry.clone());
 
     let handler = dptree::entry()
         .branch(
@@ -701,7 +750,7 @@ async fn run_bot(bot: Bot, state: AppState) -> anyhow::Result<()> {
         );
 
     Dispatcher::builder(bot, handler)
-        .dependencies(dptree::deps![agent_gateway_state(&state)])
+        .dependencies(dptree::deps![agent_gateway_state(&state, skills_registry)])
         .enable_ctrlc_handler()
         .build()
         .dispatch()

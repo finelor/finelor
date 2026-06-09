@@ -201,8 +201,52 @@ async fn mcp_lists_only_initial_tools() {
     assert!(names.contains(&"list_documents"));
     assert!(names.contains(&"get_document"));
     assert!(names.contains(&"explain_document"));
+    assert!(!names.contains(&"skill_list"));
+    assert!(!names.contains(&"skill_view"));
     assert!(!names.contains(&"list_pending_reviews"));
     assert!(!names.contains(&"list_export_ready"));
+}
+
+#[tokio::test]
+async fn mcp_does_not_expose_skill_tools() {
+    let pool = common::in_memory_pool().await;
+    let token = create_test_mcp_key(&pool).await;
+    let response = post_mcp(
+        mcp_app(pool),
+        Some(&token),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 9,
+            "method": "tools/call",
+            "params": {
+                "name": "skill_list",
+                "arguments": {}
+            }
+        }),
+        None,
+    )
+    .await;
+
+    assert!(
+        response.status().is_success(),
+        "status {}",
+        response.status()
+    );
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(
+        value.get("error").is_some(),
+        "response should include an MCP error"
+    );
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("tool not found"),
+        "unexpected error payload: {value}"
+    );
 }
 
 #[tokio::test]
@@ -269,7 +313,7 @@ async fn mcp_capability_checks_fail_closed() {
             "method": "tools/call",
             "params": {
                 "name": "explain_document",
-                "arguments": { "short_ref": "D000001" }
+                "arguments": { "document_short_ref": "D000001" }
             }
         }),
         None,

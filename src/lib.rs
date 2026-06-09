@@ -32,6 +32,8 @@ pub mod query;
 pub mod queue;
 #[cfg(feature = "ssr")]
 pub mod security;
+#[cfg(feature = "ssr")]
+pub mod skills;
 pub mod web;
 #[cfg(feature = "ssr")]
 pub mod workspace;

@@ -153,6 +153,7 @@ async fn read_only_tools_return_workspace_documents() {
 
     let pending = finelor::messaging::tools::execute_read_only_tool(
         &pool,
+        None,
         &finelor::messaging::tools::ReadOnlyToolCall {
             name: "list_pending_reviews".to_string(),
             args: serde_json::json!({ "limit": 50 }),
@@ -169,9 +170,10 @@ async fn read_only_tools_return_workspace_documents() {
 
     let get_doc = finelor::messaging::tools::execute_read_only_tool(
         &pool,
+        None,
         &finelor::messaging::tools::ReadOnlyToolCall {
             name: "get_document".to_string(),
-            args: serde_json::json!({ "short_ref": pending_ref }),
+            args: serde_json::json!({ "document_short_ref": pending_ref }),
         },
     )
     .await;
@@ -180,6 +182,7 @@ async fn read_only_tools_return_workspace_documents() {
 
     let ready = finelor::messaging::tools::execute_read_only_tool(
         &pool,
+        None,
         &finelor::messaging::tools::ReadOnlyToolCall {
             name: "list_export_ready".to_string(),
             args: serde_json::json!({ "limit": 50 }),
@@ -187,11 +190,11 @@ async fn read_only_tools_return_workspace_documents() {
     )
     .await;
     assert_eq!(ready["ok"], true);
-    assert!(
-        ready["result"]["items"]
-            .as_array()
-            .is_some_and(|items| items.iter().any(|row| row["short_ref"] == ready_ref))
-    );
+    assert!(ready["result"]["items"].as_array().is_some_and(|items| {
+        items
+            .iter()
+            .any(|row| row["document_short_ref"] == ready_ref)
+    }));
 
     cleanup_documents(&pool, &[pending_id, ready_id]).await;
 }

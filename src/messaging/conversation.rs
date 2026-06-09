@@ -25,6 +25,9 @@ pub struct ConversationReferents {
     pub latest_document_ref: Option<String>,
     pub latest_list_topic: Option<String>,
     pub latest_ordered_refs: Vec<String>,
+    pub latest_skill_name: Option<String>,
+    pub latest_skill_supporting_paths: Vec<String>,
+    pub latest_action_topic: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -45,6 +48,12 @@ pub struct AgentTurnMetadata {
     pub returned_refs: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub topic: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skill_name: Option<String>,
+    #[serde(default)]
+    pub skill_supporting_paths: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action_topic: Option<String>,
 }
 
 impl AgentTurnMetadata {
@@ -62,16 +71,22 @@ impl AgentTurnMetadata {
     pub fn note_tool_call(&mut self, tool_name: &str, args: &Value) {
         push_unique(&mut self.tool_calls, tool_name.to_string());
         if self.topic.is_none() {
-            self.topic = topic_for_tool(tool_name).map(ToString::to_string);
+            self.topic = list_topic_for_tool(tool_name).map(ToString::to_string);
         }
-        if let Some(short_ref) = args.get("short_ref").and_then(Value::as_str) {
+        if self.action_topic.is_none() {
+            self.action_topic = action_topic_for_tool(tool_name).map(ToString::to_string);
+        }
+        if let Some(short_ref) = args.get("document_short_ref").and_then(Value::as_str) {
             push_unique(&mut self.returned_refs, normalize_short_ref_text(short_ref));
         }
     }
 
     pub fn note_tool_result(&mut self, tool_name: &str, result: &Value) {
         if self.topic.is_none() {
-            self.topic = topic_for_tool(tool_name).map(ToString::to_string);
+            self.topic = list_topic_for_tool(tool_name).map(ToString::to_string);
+        }
+        if self.action_topic.is_none() {
+            self.action_topic = action_topic_for_tool(tool_name).map(ToString::to_string);
         }
 
         if let Some(items) = result
@@ -80,7 +95,7 @@ impl AgentTurnMetadata {
             .and_then(Value::as_array)
         {
             for item in items {
-                if let Some(short_ref) = item.get("short_ref").and_then(Value::as_str) {
+                if let Some(short_ref) = item.get("document_short_ref").and_then(Value::as_str) {
                     push_unique(&mut self.returned_refs, normalize_short_ref_text(short_ref));
                 }
             }
@@ -88,7 +103,7 @@ impl AgentTurnMetadata {
 
         if let Some(short_ref) = result
             .get("result")
-            .and_then(|value| value.get("short_ref"))
+            .and_then(|value| value.get("document_short_ref"))
             .and_then(Value::as_str)
         {
             push_unique(&mut self.returned_refs, normalize_short_ref_text(short_ref));
@@ -97,13 +112,31 @@ impl AgentTurnMetadata {
         if let Some(document_short_ref) = result
             .get("result")
             .and_then(|value| value.get("document"))
-            .and_then(|value| value.get("short_ref"))
+            .and_then(|value| value.get("document_short_ref"))
             .and_then(Value::as_str)
         {
             push_unique(
                 &mut self.returned_refs,
                 normalize_short_ref_text(document_short_ref),
             );
+        }
+
+        if tool_name == "skill_view"
+            && let Some(skill_name) = result
+                .get("result")
+                .and_then(|value| value.get("name").or_else(|| value.get("skill_name")))
+                .and_then(Value::as_str)
+        {
+            self.skill_name = Some(skill_name.to_string());
+        }
+
+        if tool_name == "skill_view"
+            && let Some(path) = result
+                .get("result")
+                .and_then(|value| value.get("requested_path"))
+                .and_then(Value::as_str)
+        {
+            push_unique(&mut self.skill_supporting_paths, path.to_string());
         }
     }
 
@@ -119,6 +152,9 @@ impl AgentTurnMetadata {
             "tool_calls": self.tool_calls,
             "returned_refs": self.returned_refs,
             "topic": self.topic,
+            "skill_name": self.skill_name,
+            "skill_supporting_paths": self.skill_supporting_paths,
+            "action_topic": self.action_topic,
         })
     }
 }
@@ -300,6 +336,9 @@ pub fn derive_referents(messages: &[ConversationMessage]) -> ConversationReferen
     let mut latest_document_ref = None;
     let mut latest_list_topic = None;
     let mut latest_ordered_refs = Vec::new();
+    let mut latest_skill_name = None;
+    let mut latest_skill_supporting_paths = Vec::new();
+    let mut latest_action_topic = None;
 
     for message in messages.iter().rev() {
         if latest_document_ref.is_none()
@@ -336,9 +375,41 @@ pub fn derive_referents(messages: &[ConversationMessage]) -> ConversationReferen
                 .map(ToString::to_string);
         }
 
+        if latest_skill_name.is_none() {
+            latest_skill_name = message
+                .metadata
+                .get("skill_name")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+        }
+
+        if latest_skill_supporting_paths.is_empty()
+            && let Some(paths) = message
+                .metadata
+                .get("skill_supporting_paths")
+                .and_then(Value::as_array)
+        {
+            latest_skill_supporting_paths = paths
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect();
+        }
+
+        if latest_action_topic.is_none() {
+            latest_action_topic = message
+                .metadata
+                .get("action_topic")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+        }
+
         if latest_document_ref.is_some()
             && latest_list_topic.is_some()
             && !latest_ordered_refs.is_empty()
+            && latest_skill_name.is_some()
+            && latest_action_topic.is_some()
+            && !latest_skill_supporting_paths.is_empty()
         {
             break;
         }
@@ -352,10 +423,13 @@ pub fn derive_referents(messages: &[ConversationMessage]) -> ConversationReferen
         latest_document_ref,
         latest_list_topic,
         latest_ordered_refs,
+        latest_skill_name,
+        latest_skill_supporting_paths,
+        latest_action_topic,
     }
 }
 
-fn topic_for_tool(tool_name: &str) -> Option<&'static str> {
+fn list_topic_for_tool(tool_name: &str) -> Option<&'static str> {
     match tool_name {
         "document_status_summary" => Some("company document status summary"),
         "list_documents" => Some("recent documents"),
@@ -363,6 +437,12 @@ fn topic_for_tool(tool_name: &str) -> Option<&'static str> {
         "explain_document" => Some("document explanation"),
         "list_pending_reviews" => Some("pending review documents"),
         "list_export_ready" => Some("export-ready documents"),
+        _ => None,
+    }
+}
+
+fn action_topic_for_tool(tool_name: &str) -> Option<&'static str> {
+    match tool_name {
         "prepare_open_review" => Some("open document review"),
         "prepare_retry_document" => Some("retry document processing"),
         "prepare_export_documents" => Some("export documents"),
@@ -423,6 +503,132 @@ mod tests {
         assert_eq!(
             referents.latest_list_topic.as_deref(),
             Some("pending review documents")
+        );
+        assert_eq!(
+            referents.latest_ordered_refs,
+            vec!["D000057".to_string(), "D000061".to_string()]
+        );
+    }
+
+    #[test]
+    fn note_tool_result_tracks_skill_and_supporting_files() {
+        let mut metadata = AgentTurnMetadata::default();
+
+        metadata.note_tool_result(
+            "skill_view",
+            &json!({
+                "ok": true,
+                "tool": "skill_view",
+                "result": {
+                    "name": "Document Completeness Checklist"
+                }
+            }),
+        );
+        metadata.note_tool_result(
+            "skill_view",
+            &json!({
+                "ok": true,
+                "tool": "skill_view",
+                "result": {
+                    "skill_name": "Document Completeness Checklist",
+                    "requested_path": "references/checklist-rules.md"
+                }
+            }),
+        );
+        metadata.note_tool_result(
+            "skill_view",
+            &json!({
+                "ok": true,
+                "tool": "skill_view",
+                "result": {
+                    "skill_name": "Document Completeness Checklist",
+                    "requested_path": "templates/document-completeness-checklist.md"
+                }
+            }),
+        );
+
+        assert_eq!(
+            metadata.skill_name.as_deref(),
+            Some("Document Completeness Checklist")
+        );
+        assert_eq!(
+            metadata.skill_supporting_paths,
+            vec![
+                "references/checklist-rules.md".to_string(),
+                "templates/document-completeness-checklist.md".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn note_tool_call_and_result_keep_action_topics_separate() {
+        let mut metadata = AgentTurnMetadata::default();
+
+        metadata.note_tool_call(
+            "prepare_retry_document",
+            &json!({"document_short_ref": "D000057"}),
+        );
+        metadata.note_tool_result(
+            "prepare_retry_document",
+            &json!({
+                "ok": true,
+                "tool": "prepare_retry_document",
+                "result": {}
+            }),
+        );
+
+        assert!(metadata.topic.is_none());
+        assert_eq!(
+            metadata.action_topic.as_deref(),
+            Some("retry document processing")
+        );
+        assert_eq!(metadata.returned_refs, vec!["D000057".to_string()]);
+    }
+
+    #[test]
+    fn derive_referents_tracks_skill_and_action_context() {
+        let messages = vec![
+            ConversationMessage {
+                role: "assistant".to_string(),
+                content: "Used a skill".to_string(),
+                metadata: json!({
+                    "skill_name": "Document Completeness Checklist",
+                    "skill_supporting_paths": [
+                        "references/checklist-rules.md",
+                        "templates/document-completeness-checklist.md"
+                    ],
+                    "topic": "recent documents",
+                    "returned_refs": ["D000057", "D000061"]
+                }),
+            },
+            ConversationMessage {
+                role: "assistant".to_string(),
+                content: "Prepared retry".to_string(),
+                metadata: json!({
+                    "action_topic": "retry document processing"
+                }),
+            },
+        ];
+
+        let referents = derive_referents(&messages);
+        assert_eq!(
+            referents.latest_skill_name.as_deref(),
+            Some("Document Completeness Checklist")
+        );
+        assert_eq!(
+            referents.latest_skill_supporting_paths,
+            vec![
+                "references/checklist-rules.md".to_string(),
+                "templates/document-completeness-checklist.md".to_string()
+            ]
+        );
+        assert_eq!(
+            referents.latest_action_topic.as_deref(),
+            Some("retry document processing")
+        );
+        assert_eq!(
+            referents.latest_list_topic.as_deref(),
+            Some("recent documents")
         );
         assert_eq!(
             referents.latest_ordered_refs,
