@@ -122,6 +122,26 @@ async fn filedb_pipeline_smoke_runs_to_validation_boundary() {
         .expect("enqueue vision");
 
     run_next_job(&pool, &queue, &producer, fake.clone()).await;
+
+    let pending_after_vision = QueueConsumer::new(queue.clone(), "filedb-peek")
+        .poll(1)
+        .await
+        .expect("poll after vision");
+    assert!(
+        pending_after_vision.is_empty(),
+        "vision completion should not automatically enqueue accountant"
+    );
+
+    sqlx::query("UPDATE documents SET accounting_requested_at = CURRENT_TIMESTAMP WHERE id = $1")
+        .bind(document_id)
+        .execute(&pool)
+        .await
+        .expect("mark accounting requested");
+    producer
+        .enqueue(&Job::new(JobType::Accountant, document_id, 0))
+        .await
+        .expect("enqueue accountant");
+
     run_next_job(&pool, &queue, &producer, fake.clone()).await;
     run_next_job(&pool, &queue, &producer, fake.clone()).await;
 

@@ -198,3 +198,33 @@ async fn read_only_tools_return_workspace_documents() {
 
     cleanup_documents(&pool, &[pending_id, ready_id]).await;
 }
+
+#[tokio::test]
+async fn accounting_eligible_queries_only_return_unrequested_vision_complete_documents() {
+    let pool = common::in_memory_pool().await;
+
+    let (eligible_id, eligible_ref) = create_document(&pool, "VISION_COMPLETE").await;
+    let (requested_id, _) = create_document(&pool, "VISION_COMPLETE").await;
+    let (processing_id, _) = create_document(&pool, "PROCESSING_ACCOUNTANT").await;
+
+    sqlx::query(
+        "UPDATE documents SET accounting_requested_at = '2026-01-01T00:00:00Z' WHERE id = $1",
+    )
+    .bind(requested_id)
+    .execute(&pool)
+    .await
+    .expect("mark requested");
+
+    let count = finelor::query::count_accounting_eligible_documents(&pool)
+        .await
+        .expect("eligible count");
+    assert_eq!(count, 1);
+
+    let rows = finelor::query::list_accounting_eligible_documents(&pool, 10)
+        .await
+        .expect("eligible rows");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].short_ref, eligible_ref);
+
+    cleanup_documents(&pool, &[eligible_id, requested_id, processing_id]).await;
+}

@@ -42,6 +42,14 @@ pub struct DocumentRef {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct AccountingProcessingCandidate {
+    pub id: i64,
+    pub short_ref: String,
+    pub status: String,
+    pub accounting_requested_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct RetryDocument {
     pub id: i64,
     pub short_ref: String,
@@ -258,6 +266,125 @@ pub async fn document_ref_by_short_ref(
     .await?;
 
     Ok(row)
+}
+
+pub async fn accounting_processing_candidate_by_short_ref(
+    pool: &DbPool,
+    short_ref: &str,
+) -> anyhow::Result<Option<AccountingProcessingCandidate>> {
+    let row = sqlx::query_as(
+        r#"
+        SELECT id, short_ref, status, accounting_requested_at
+        FROM documents
+        WHERE short_ref = $1
+        LIMIT 1
+        "#,
+    )
+    .bind(short_ref)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row)
+}
+
+pub async fn accounting_processing_candidates_by_short_refs(
+    pool: &DbPool,
+    short_refs: &[String],
+) -> anyhow::Result<Vec<AccountingProcessingCandidate>> {
+    if short_refs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders = std::iter::repeat_n("?", short_refs.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let query = format!(
+        r#"
+        SELECT id, short_ref, status, accounting_requested_at
+        FROM documents
+        WHERE short_ref IN ({placeholders})
+        ORDER BY received_at DESC, id DESC
+        "#
+    );
+
+    let mut built = sqlx::query_as::<_, AccountingProcessingCandidate>(&query);
+    for short_ref in short_refs {
+        built = built.bind(short_ref);
+    }
+
+    Ok(built.fetch_all(pool).await?)
+}
+
+pub async fn accounting_processing_candidates_by_ids(
+    pool: &DbPool,
+    document_ids: &[i64],
+) -> anyhow::Result<Vec<AccountingProcessingCandidate>> {
+    if document_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders = std::iter::repeat_n("?", document_ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let query = format!(
+        r#"
+        SELECT id, short_ref, status, accounting_requested_at
+        FROM documents
+        WHERE id IN ({placeholders})
+        ORDER BY received_at DESC, id DESC
+        "#
+    );
+
+    let mut built = sqlx::query_as::<_, AccountingProcessingCandidate>(&query);
+    for document_id in document_ids {
+        built = built.bind(document_id);
+    }
+
+    Ok(built.fetch_all(pool).await?)
+}
+
+pub async fn list_accounting_eligible_documents(
+    pool: &DbPool,
+    limit: i64,
+) -> anyhow::Result<Vec<DocumentSummary>> {
+    let query = document_summary_query(
+        "d.status = 'VISION_COMPLETE' AND d.accounting_requested_at IS NULL",
+        "$1",
+    );
+    Ok(sqlx::query_as(&query).bind(limit).fetch_all(pool).await?)
+}
+
+pub async fn count_accounting_eligible_documents(pool: &DbPool) -> anyhow::Result<i64> {
+    let count = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM documents
+        WHERE status = 'VISION_COMPLETE'
+          AND accounting_requested_at IS NULL
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+
+    Ok(count)
+}
+
+pub async fn accounting_eligible_candidates(
+    pool: &DbPool,
+) -> anyhow::Result<Vec<AccountingProcessingCandidate>> {
+    let rows = sqlx::query_as(
+        r#"
+        SELECT id, short_ref, status, accounting_requested_at
+        FROM documents
+        WHERE status = 'VISION_COMPLETE'
+          AND accounting_requested_at IS NULL
+        ORDER BY received_at DESC, id DESC
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows)
 }
 
 pub async fn retry_document_by_short_ref(

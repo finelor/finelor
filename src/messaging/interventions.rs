@@ -276,7 +276,7 @@ async fn sender_progress_response(
         message = format!("Recorded {}. {}", event.short_ref, summary);
     }
 
-    message.push_str(" Forwarding to accounting.");
+    message.push_str(" Vision processed. It has not been sent to accounting yet.");
 
     Ok(GatewayMessageResponse {
         message,
@@ -465,6 +465,9 @@ pub async fn release_intervention_delivery_claim(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::SqlitePool;
+
+    use crate::db::run_migrations;
 
     #[test]
     fn classifies_sender_progress_from_vision_completion() {
@@ -476,6 +479,46 @@ mod tests {
                 InterventionKind::SenderProgress
             ))
         );
+    }
+
+    #[tokio::test]
+    async fn sender_progress_response_reflects_post_vision_boundary() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect sqlite");
+        run_migrations(&pool).await.expect("run migrations");
+
+        let (document_id, short_ref): (i64, String) = sqlx::query_as(
+            r#"
+            INSERT INTO documents (filename, status, file_hash, original_path, mime_type)
+            VALUES ('receipt.jpg', 'VISION_COMPLETE', 'hash-1', '/tmp/receipt.jpg', 'image/jpeg')
+            RETURNING id, short_ref
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("insert document");
+
+        let event = DocumentEventCandidate {
+            event_id: 1,
+            document_id,
+            short_ref,
+            status: "VISION_COMPLETE".to_string(),
+            event_type: "VISION_COMPLETED".to_string(),
+            payload: None,
+            created_at: Utc::now(),
+        };
+
+        let response = sender_progress_response(&pool, &event)
+            .await
+            .expect("build sender progress response");
+
+        assert!(
+            response
+                .message
+                .contains("Vision processed. It has not been sent to accounting yet.")
+        );
+        assert!(!response.message.contains("Forwarding to accounting."));
     }
 
     #[test]

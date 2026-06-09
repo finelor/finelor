@@ -7,6 +7,9 @@ use std::sync::Arc;
 use finelor::agents::review::ReviewField;
 use finelor::db::ChannelType;
 use finelor::kv::EphemeralStore;
+use finelor::messaging::confirmations::{
+    AgentConfirmationActionKind, NewAgentConfirmation, create_agent_confirmation,
+};
 use finelor::messaging::contracts::{AgentInboundMessage, MessageSource};
 use finelor::messaging::conversation::load_recent_context;
 use finelor::messaging::gateway::{AgentGatewayState, build_session_key};
@@ -213,4 +216,56 @@ async fn pending_review_text_interaction_persists_correction_and_queues_validato
     let jobs = common::drain_jobs(&queue, 10).await;
     assert_eq!(jobs.len(), 1);
     assert!(matches!(jobs[0].1.job_type, JobType::Validator));
+}
+
+#[tokio::test]
+async fn confirmed_accounting_processing_marks_request_and_queues_accountant() {
+    let pool = common::in_memory_pool().await;
+    let queue = common::test_queue();
+    let producer = QueueProducer::new(queue.clone());
+    let (document_id, short_ref) = create_document(&pool, "VISION_COMPLETE").await;
+
+    let state = gateway_state(pool.clone(), common::test_config(), producer);
+    let source = source("accounting-chat");
+    let confirmation = create_agent_confirmation(
+        &state.ephemeral_store,
+        NewAgentConfirmation {
+            workspace_id: finelor::workspace::active_workspace_id(),
+            document_id: None,
+            channel_type: source.channel.as_str().to_string(),
+            channel_identifier: source.channel_identifier.clone(),
+            profile_identifier: source.profile_identifier.clone(),
+            action_kind: AgentConfirmationActionKind::ProcessAccountingDocuments,
+            payload: json!({
+                "document_ids": [document_id],
+                "document_short_refs": [short_ref]
+            }),
+        },
+    )
+    .await
+    .expect("create confirmation");
+
+    let response = state
+        .handle_document_action(
+            &source,
+            finelor::messaging::contracts::DocumentAction::ConfirmAgentAction {
+                confirmation_id: confirmation.id,
+            },
+        )
+        .await
+        .expect("confirm accounting processing");
+
+    assert!(!response.message.is_empty());
+
+    let requested_at: Option<String> =
+        sqlx::query_scalar("SELECT accounting_requested_at FROM documents WHERE id = $1")
+            .bind(document_id)
+            .fetch_one(&pool)
+            .await
+            .expect("accounting requested");
+    assert!(requested_at.is_some());
+
+    let jobs = common::drain_jobs(&queue, 10).await;
+    assert_eq!(jobs.len(), 1);
+    assert!(matches!(jobs[0].1.job_type, JobType::Accountant));
 }

@@ -11,14 +11,18 @@ use crate::agents::review::{HumanReviewKeyboard, ReviewField};
 use crate::agents::{HumanReviewCallbackResult, process_human_review_callback};
 use crate::config::AppConfig;
 use crate::inference::{OllamaProvider, ToolChatMessage};
-use crate::query::{document_ref_by_short_ref, workspace_identity};
+use crate::query::{
+    accounting_processing_candidates_by_ids, document_ref_by_short_ref, workspace_identity,
+};
 use crate::queue::QueueProducer;
 use crate::skills::SkillRegistry;
 use crate::web::events::AppEventBus;
 
 use super::commands::{
-    build_help_message, execute_gateway_intent, export_documents, reopen_review_actions,
-    retry_document,
+    AccountingProcessingSelection, build_help_message, describe_accounting_processing_execution,
+    describe_accounting_processing_preview, execute_accounting_processing_request,
+    execute_gateway_intent, export_documents, preview_accounting_processing_selection,
+    reopen_review_actions, retry_document,
 };
 use super::confirmations::{
     AgentConfirmation, AgentConfirmationActionKind, NewAgentConfirmation,
@@ -478,6 +482,42 @@ impl AgentGatewayState {
                 };
                 Ok(confirmation_response(confirmation.id, message))
             }
+            "prepare_process_accounting_documents" => {
+                let selection = accounting_processing_selection_from_tool_args(&tool_call.args)?;
+                let preview =
+                    preview_accounting_processing_selection(&self.pool, selection).await?;
+                if preview.eligible_documents.is_empty() {
+                    return Ok(GatewayMessageResponse::text(
+                        describe_accounting_processing_preview(&preview),
+                    ));
+                }
+
+                let payload = json!({
+                    "document_ids": preview
+                        .eligible_documents
+                        .iter()
+                        .map(|document| document.id)
+                        .collect::<Vec<_>>(),
+                    "document_short_refs": preview
+                        .eligible_documents
+                        .iter()
+                        .map(|document| document.short_ref.clone())
+                        .collect::<Vec<_>>(),
+                });
+                let confirmation = self
+                    .store_confirmation(
+                        workspace_id,
+                        source,
+                        None,
+                        AgentConfirmationActionKind::ProcessAccountingDocuments,
+                        payload,
+                    )
+                    .await?;
+                Ok(confirmation_response(
+                    confirmation.id,
+                    describe_accounting_processing_preview(&preview),
+                ))
+            }
             other => Ok(GatewayMessageResponse::text(format!(
                 "I cannot prepare that action yet: {}.",
                 other
@@ -696,6 +736,33 @@ impl AgentGatewayState {
                 let args = confirmation_export_args(&confirmation);
                 export_documents(self, source, confirmation.workspace_id, &args).await?
             }
+            AgentConfirmationActionKind::ProcessAccountingDocuments => {
+                let document_ids = confirmation_document_ids(&confirmation)?;
+                let candidates =
+                    accounting_processing_candidates_by_ids(&self.pool, &document_ids).await?;
+                let eligible = candidates
+                    .into_iter()
+                    .filter(|candidate| {
+                        candidate.status == "VISION_COMPLETE"
+                            && candidate.accounting_requested_at.is_none()
+                    })
+                    .collect::<Vec<_>>();
+                if eligible.is_empty() {
+                    GatewayMessageResponse::text(
+                        "Those documents are no longer eligible for accounting processing.",
+                    )
+                } else {
+                    let execution = execute_accounting_processing_request(
+                        &self.pool,
+                        &self.queue_producer,
+                        &eligible,
+                    )
+                    .await?;
+                    GatewayMessageResponse::text(describe_accounting_processing_execution(
+                        &execution,
+                    ))
+                }
+            }
         };
 
         Ok(GatewayActionResponse::from_message_response(
@@ -814,6 +881,55 @@ fn export_payload_from_tool_args(args: &serde_json::Value) -> anyhow::Result<ser
     Ok(serde_json::Value::Object(payload))
 }
 
+fn accounting_processing_selection_from_tool_args(
+    args: &serde_json::Value,
+) -> anyhow::Result<AccountingProcessingSelection> {
+    let single = args
+        .get("document_short_ref")
+        .and_then(|value| value.as_str());
+    let multiple = args
+        .get("document_short_refs")
+        .and_then(|value| value.as_array());
+    let all_eligible = args
+        .get("all_eligible")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+
+    let selector_count =
+        usize::from(single.is_some()) + usize::from(multiple.is_some()) + usize::from(all_eligible);
+    if selector_count != 1 {
+        return Err(anyhow::anyhow!(
+            "provide exactly one of document_short_ref, document_short_refs, or all_eligible"
+        ));
+    }
+
+    if let Some(raw) = single {
+        return normalize_short_ref(raw)
+            .map(AccountingProcessingSelection::One)
+            .ok_or_else(|| anyhow::anyhow!("invalid document_short_ref: {raw}"));
+    }
+
+    if let Some(values) = multiple {
+        let mut refs = Vec::new();
+        for value in values {
+            let raw = value
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("document_short_refs must contain only strings"))?;
+            let normalized = normalize_short_ref(raw)
+                .ok_or_else(|| anyhow::anyhow!("invalid document_short_ref: {raw}"))?;
+            if !refs.contains(&normalized) {
+                refs.push(normalized);
+            }
+        }
+        if refs.is_empty() {
+            return Err(anyhow::anyhow!("document_short_refs must not be empty"));
+        }
+        return Ok(AccountingProcessingSelection::Many(refs));
+    }
+
+    Ok(AccountingProcessingSelection::AllEligible)
+}
+
 fn confirmation_document_short_ref(confirmation: &AgentConfirmation) -> anyhow::Result<String> {
     confirmation
         .payload
@@ -856,6 +972,29 @@ fn confirmation_export_args(confirmation: &AgentConfirmation) -> GatewayIntentAr
             .get("confidence_min")
             .and_then(|value| value.as_f64()),
     }
+}
+
+fn confirmation_document_ids(confirmation: &AgentConfirmation) -> anyhow::Result<Vec<i64>> {
+    let ids = confirmation
+        .payload
+        .get("document_ids")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| anyhow::anyhow!("confirmation missing document_ids"))?
+        .iter()
+        .map(|value| {
+            value
+                .as_i64()
+                .ok_or_else(|| anyhow::anyhow!("confirmation document_ids must be integers"))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    if ids.is_empty() {
+        return Err(anyhow::anyhow!(
+            "confirmation document_ids must not be empty"
+        ));
+    }
+
+    Ok(ids)
 }
 
 fn slash_route(resolution: &GatewayIntentResolution) -> SlashRoute {
@@ -1244,6 +1383,41 @@ mod tests {
     }
 
     #[test]
+    fn accounting_processing_selection_from_tool_args_requires_exactly_one_selector() {
+        let err = accounting_processing_selection_from_tool_args(&json!({}))
+            .expect_err("missing selector should fail");
+        assert!(err.to_string().contains("exactly one"));
+
+        let err = accounting_processing_selection_from_tool_args(&json!({
+            "document_short_ref": "D57",
+            "all_eligible": true
+        }))
+        .expect_err("multiple selectors should fail");
+        assert!(err.to_string().contains("exactly one"));
+    }
+
+    #[test]
+    fn accounting_processing_selection_from_tool_args_normalizes_refs() {
+        let single = accounting_processing_selection_from_tool_args(&json!({
+            "document_short_ref": "57"
+        }))
+        .expect("single selector");
+        assert_eq!(
+            single,
+            AccountingProcessingSelection::One("D000057".to_string())
+        );
+
+        let many = accounting_processing_selection_from_tool_args(&json!({
+            "document_short_refs": ["57", "D000058", "57"]
+        }))
+        .expect("many selector");
+        assert_eq!(
+            many,
+            AccountingProcessingSelection::Many(vec!["D000057".to_string(), "D000058".to_string()])
+        );
+    }
+
+    #[test]
     fn confirmation_export_args_reads_payload_without_normalizing_again() {
         let confirmation = AgentConfirmation {
             id: "confirmation".to_string(),
@@ -1270,5 +1444,27 @@ mod tests {
         assert_eq!(args.date_to.as_deref(), Some("2026-01-31"));
         assert_eq!(args.document_types, Some(vec!["INVOICE".to_string()]));
         assert_eq!(args.confidence_min, Some(0.75));
+    }
+
+    #[test]
+    fn confirmation_document_ids_reads_integer_payload() {
+        let confirmation = AgentConfirmation {
+            id: "confirmation".to_string(),
+            workspace_id: Uuid::new_v4(),
+            document_id: None,
+            channel_type: "telegram".to_string(),
+            channel_identifier: "chat".to_string(),
+            profile_identifier: None,
+            action_kind: AgentConfirmationActionKind::ProcessAccountingDocuments,
+            payload: json!({
+                "document_ids": [7, 8]
+            }),
+            expires_at: chrono::Utc::now().timestamp() + 60,
+        };
+
+        assert_eq!(
+            confirmation_document_ids(&confirmation).unwrap(),
+            vec![7, 8]
+        );
     }
 }

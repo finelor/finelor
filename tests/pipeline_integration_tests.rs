@@ -117,16 +117,17 @@ async fn recovery_queues_expected_jobs_from_incomplete_documents() {
     let queue = common::test_queue();
     let producer = QueueProducer::new(queue.clone());
 
-    for (status, priority) in [
-        ("RECEIVED", "NORMAL"),
-        ("PROCESSING_VISION", "HIGH"),
-        ("VISION_COMPLETE", "LOW"),
-        ("PROCESSING_ACCOUNTANT", "HIGH"),
-        ("ACCOUNTANT_REVIEWED", "NORMAL"),
-        ("PROCESSING_VALIDATOR", "NORMAL"),
-        ("VALIDATED", "NORMAL"),
-        ("FAILED", "HIGH"),
-        ("EXPORT_READY", "HIGH"),
+    for (status, priority, accounting_requested) in [
+        ("RECEIVED", "NORMAL", false),
+        ("PROCESSING_VISION", "HIGH", false),
+        ("VISION_COMPLETE", "LOW", false),
+        ("VISION_COMPLETE", "HIGH", true),
+        ("PROCESSING_ACCOUNTANT", "HIGH", false),
+        ("ACCOUNTANT_REVIEWED", "NORMAL", false),
+        ("PROCESSING_VALIDATOR", "NORMAL", false),
+        ("VALIDATED", "NORMAL", false),
+        ("FAILED", "HIGH", false),
+        ("EXPORT_READY", "HIGH", false),
     ] {
         let id = create_document(&pool, status).await;
         sqlx::query("UPDATE documents SET priority = $1 WHERE id = $2")
@@ -135,6 +136,15 @@ async fn recovery_queues_expected_jobs_from_incomplete_documents() {
             .execute(&pool)
             .await
             .expect("update priority");
+        if accounting_requested {
+            sqlx::query(
+                "UPDATE documents SET accounting_requested_at = '2026-01-01T00:00:00Z' WHERE id = $1",
+            )
+            .bind(id)
+            .execute(&pool)
+            .await
+            .expect("mark requested");
+        }
     }
 
     let recovered = recover_incomplete_jobs(&pool, &producer)
@@ -176,7 +186,10 @@ async fn recovery_queues_expected_jobs_from_incomplete_documents() {
         1
     );
     assert!(jobs.iter().any(|(_, job)| job.priority == 5));
-    assert!(jobs.iter().any(|(_, job)| job.priority == -5));
+    assert!(
+        !jobs.iter().any(|(_, job)| job.priority == -5),
+        "plain VISION_COMPLETE documents should not recover into accounting without an explicit request"
+    );
 }
 
 #[tokio::test]
@@ -332,7 +345,7 @@ async fn validator_writes_results_confidence_status_and_events() {
 }
 
 #[tokio::test]
-async fn vision_agent_uses_fake_inference_and_enqueues_accountant() {
+async fn vision_agent_uses_fake_inference_and_stops_after_vision() {
     let pool = common::in_memory_pool().await;
     let queue = common::test_queue();
     let producer = QueueProducer::new(queue.clone());
@@ -373,8 +386,15 @@ async fn vision_agent_uses_fake_inference_and_enqueues_accountant() {
     assert_eq!(supplier.as_deref(), Some("Acme AB"));
 
     let jobs = common::drain_jobs(&queue, 10).await;
-    assert_eq!(jobs.len(), 1);
-    assert!(matches!(jobs[0].1.job_type, JobType::Accountant));
+    assert!(jobs.is_empty());
+
+    let accounting_requested_at: Option<String> =
+        sqlx::query_scalar("SELECT accounting_requested_at FROM documents WHERE id = $1")
+            .bind(document_id)
+            .fetch_one(&pool)
+            .await
+            .expect("accounting request state");
+    assert!(accounting_requested_at.is_none());
 }
 
 #[tokio::test]

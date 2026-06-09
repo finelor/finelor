@@ -6,9 +6,10 @@ use serde_json::json;
 
 use crate::inference::{ToolCall, ToolDefinition as InferenceToolDefinition, ToolFunction};
 use crate::query::{
-    DocumentSummary, count_documents, count_documents_by_status,
-    count_documents_requiring_attention, document_status_counts, document_summary_by_short_ref,
-    list_documents_by_status, list_documents_requiring_attention, list_recent_documents,
+    DocumentSummary, count_accounting_eligible_documents, count_documents,
+    count_documents_by_status, count_documents_requiring_attention, document_status_counts,
+    document_summary_by_short_ref, list_accounting_eligible_documents, list_documents_by_status,
+    list_documents_requiring_attention, list_recent_documents,
 };
 use crate::skills::SkillRegistry;
 
@@ -118,6 +119,17 @@ pub fn read_only_tool_catalog() -> Vec<AppToolDefinition> {
             }),
         },
         AppToolDefinition {
+            name: "list_accounting_eligible_documents",
+            description: "List company documents that are vision processed and can now be sent to accounting, with exact total_count and compact returned items.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "limit": { "type": "integer", "minimum": 1, "maximum": MAX_LIST_LIMIT }
+                },
+                "additionalProperties": false
+            }),
+        },
+        AppToolDefinition {
             name: "skill_view",
             description: "View full content of a skill by name, or load a specific supporting file such as a reference or template by path.",
             input_schema: json!({
@@ -182,6 +194,19 @@ pub fn mutating_prepare_tool_catalog() -> Vec<AppToolDefinition> {
                 "additionalProperties": false
             }),
         },
+        AppToolDefinition {
+            name: "prepare_process_accounting_documents",
+            description: "Prepare a confirmation prompt to start accounting processing for one, several, or all vision processed documents. Use only when the user explicitly asks to process documents for accounting.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "document_short_ref": { "type": "string" },
+                    "document_short_refs": { "type": "array", "items": { "type": "string" } },
+                    "all_eligible": { "type": "boolean" }
+                },
+                "additionalProperties": false
+            }),
+        },
     ]
 }
 
@@ -196,7 +221,10 @@ pub fn agent_inference_tools() -> Vec<InferenceToolDefinition> {
 pub fn is_mutating_prepare_tool(name: &str) -> bool {
     matches!(
         name,
-        "prepare_open_review" | "prepare_retry_document" | "prepare_export_documents"
+        "prepare_open_review"
+            | "prepare_retry_document"
+            | "prepare_export_documents"
+            | "prepare_process_accounting_documents"
     )
 }
 
@@ -259,6 +287,12 @@ async fn execute_read_only_tool_inner(
             let limit = limit_arg(&tool_call.args);
             let total_count = count_documents_by_status(pool, "EXPORT_READY").await?;
             let documents = list_documents_by_status(pool, "EXPORT_READY", limit).await?;
+            Ok(document_list_result(total_count, documents))
+        }
+        "list_accounting_eligible_documents" => {
+            let limit = limit_arg(&tool_call.args);
+            let total_count = count_accounting_eligible_documents(pool).await?;
+            let documents = list_accounting_eligible_documents(pool, limit).await?;
             Ok(document_list_result(total_count, documents))
         }
         "skill_view" => {
@@ -715,7 +749,15 @@ mod tests {
                 .iter()
                 .any(|tool| tool.function.name == "prepare_retry_document")
         );
+        assert!(
+            tools
+                .iter()
+                .any(|tool| tool.function.name == "prepare_process_accounting_documents")
+        );
         assert!(is_mutating_prepare_tool("prepare_export_documents"));
+        assert!(is_mutating_prepare_tool(
+            "prepare_process_accounting_documents"
+        ));
         assert!(!is_mutating_prepare_tool("list_documents"));
     }
 
@@ -757,6 +799,57 @@ mod tests {
 
         assert_eq!(value["total_count"], 100);
         assert_eq!(value["returned_count"], 1);
+    }
+
+    #[tokio::test]
+    async fn list_accounting_eligible_documents_returns_only_vision_complete_unrequested_items() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .in_memory(true)
+                    .foreign_keys(true),
+            )
+            .await
+            .expect("connect");
+        crate::db::run_migrations(&pool).await.expect("migrate");
+
+        for (status, requested) in [
+            ("VISION_COMPLETE", None),
+            ("VISION_COMPLETE", Some("2026-01-01T00:00:00Z")),
+            ("PROCESSING_ACCOUNTANT", None),
+        ] {
+            sqlx::query(
+                r#"
+                INSERT INTO documents (filename, status, file_hash, original_path, mime_type, accounting_requested_at)
+                VALUES ('doc.pdf', $1, $2, '/tmp/doc.pdf', 'application/pdf', $3)
+                "#,
+            )
+            .bind(status)
+            .bind(format!("eligible-{}", uuid::Uuid::new_v4()))
+            .bind(requested)
+            .execute(&pool)
+            .await
+            .expect("insert document");
+        }
+
+        let value = execute_read_only_tool(
+            &pool,
+            None,
+            &ReadOnlyToolCall {
+                name: "list_accounting_eligible_documents".to_string(),
+                args: json!({ "limit": 10 }),
+            },
+        )
+        .await;
+
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["result"]["total_count"], 1);
+        assert_eq!(value["result"]["returned_count"], 1);
+        assert_eq!(
+            value["result"]["items"][0]["status"],
+            json!("VISION_COMPLETE")
+        );
     }
 
     #[test]

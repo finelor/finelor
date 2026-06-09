@@ -13,12 +13,15 @@ use crate::agents::{
     build_failed_document_explanation, describe_approval_block,
 };
 use crate::query::{
-    DocumentRef, DocumentSummary, ReviewSummary, document_ref_by_short_ref, document_status_counts,
-    document_summary_by_short_ref, document_why_details, latest_document,
+    AccountingProcessingCandidate, DocumentRef, DocumentSummary, ReviewSummary,
+    accounting_eligible_candidates, accounting_processing_candidate_by_short_ref,
+    accounting_processing_candidates_by_short_refs, document_ref_by_short_ref,
+    document_status_counts, document_summary_by_short_ref, document_why_details, latest_document,
     latest_failure_event_for_document, latest_source_media_artifact, list_documents_by_status,
     list_documents_requiring_attention, list_recent_documents, retry_document_by_short_ref,
     review_summary,
 };
+use crate::queue::{Job, JobType, QueueProducer};
 
 use super::contracts::{
     ActionButton, DocumentAction, GatewayAttachment, GatewayMessageFormat, GatewayMessageResponse,
@@ -31,6 +34,32 @@ enum ReviewEligibility {
     Reviewable,
     NotReviewableSystemFailure(String),
     NotReviewableStatus(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AccountingProcessingSelection {
+    One(String),
+    Many(Vec<String>),
+    AllEligible,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AccountingProcessingSkip {
+    pub short_ref: Option<String>,
+    pub status: Option<String>,
+    pub reason: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AccountingProcessingPreview {
+    pub eligible_documents: Vec<AccountingProcessingCandidate>,
+    pub skipped: Vec<AccountingProcessingSkip>,
+    pub all_eligible: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AccountingProcessingExecution {
+    pub queued_documents: Vec<AccountingProcessingCandidate>,
 }
 
 pub async fn execute_gateway_intent(
@@ -462,6 +491,7 @@ pub(crate) async fn retry_document(
         r#"
         UPDATE documents
         SET status = 'RECEIVED',
+            accounting_requested_at = NULL,
             vision_started_at = NULL,
             vision_completed_at = NULL,
             accountant_reviewed_at = NULL,
@@ -514,6 +544,235 @@ pub(crate) async fn retry_document(
         "Requeued {} for full reprocessing from {}.",
         document.short_ref, previous_status
     ))
+}
+
+pub(crate) async fn preview_accounting_processing_selection(
+    pool: &DbPool,
+    selection: AccountingProcessingSelection,
+) -> anyhow::Result<AccountingProcessingPreview> {
+    match selection {
+        AccountingProcessingSelection::One(short_ref) => {
+            let candidate = accounting_processing_candidate_by_short_ref(pool, &short_ref).await?;
+            Ok(AccountingProcessingPreview {
+                eligible_documents: candidate
+                    .iter()
+                    .filter(|candidate| candidate_is_accounting_eligible(candidate))
+                    .cloned()
+                    .collect(),
+                skipped: match candidate {
+                    Some(candidate) => candidate_skip_reason(&candidate).into_iter().collect(),
+                    None => vec![AccountingProcessingSkip {
+                        short_ref: Some(short_ref),
+                        status: None,
+                        reason: "not found",
+                    }],
+                },
+                all_eligible: false,
+            })
+        }
+        AccountingProcessingSelection::Many(short_refs) => {
+            let candidates =
+                accounting_processing_candidates_by_short_refs(pool, &short_refs).await?;
+            let mut candidate_by_ref = std::collections::HashMap::new();
+            for candidate in candidates {
+                candidate_by_ref.insert(candidate.short_ref.clone(), candidate);
+            }
+
+            let mut eligible_documents = Vec::new();
+            let mut skipped = Vec::new();
+
+            for short_ref in short_refs {
+                match candidate_by_ref.remove(&short_ref) {
+                    Some(candidate) if candidate_is_accounting_eligible(&candidate) => {
+                        eligible_documents.push(candidate);
+                    }
+                    Some(candidate) => {
+                        if let Some(skip) = candidate_skip_reason(&candidate) {
+                            skipped.push(skip);
+                        }
+                    }
+                    None => skipped.push(AccountingProcessingSkip {
+                        short_ref: Some(short_ref),
+                        status: None,
+                        reason: "not found",
+                    }),
+                }
+            }
+
+            Ok(AccountingProcessingPreview {
+                eligible_documents,
+                skipped,
+                all_eligible: false,
+            })
+        }
+        AccountingProcessingSelection::AllEligible => Ok(AccountingProcessingPreview {
+            eligible_documents: accounting_eligible_candidates(pool).await?,
+            skipped: Vec::new(),
+            all_eligible: true,
+        }),
+    }
+}
+
+pub(crate) async fn execute_accounting_processing_request(
+    pool: &DbPool,
+    queue_producer: &QueueProducer,
+    documents: &[AccountingProcessingCandidate],
+) -> anyhow::Result<AccountingProcessingExecution> {
+    if documents.is_empty() {
+        return Ok(AccountingProcessingExecution {
+            queued_documents: Vec::new(),
+        });
+    }
+
+    let mut tx = pool.begin().await?;
+
+    for document in documents {
+        sqlx::query(
+            r#"
+            UPDATE documents
+            SET accounting_requested_at = COALESCE(accounting_requested_at, CURRENT_TIMESTAMP),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $1
+            "#,
+        )
+        .bind(document.id)
+        .execute(&mut *tx)
+        .await?;
+
+        crate::agents::db_helpers::record_document_event_in_tx(
+            &mut tx,
+            document.id,
+            "ACCOUNTING_PROCESSING_REQUESTED",
+            json!({ "document_short_ref": document.short_ref }),
+        )
+        .await?;
+    }
+
+    tx.commit().await?;
+
+    for document in documents {
+        queue_producer
+            .enqueue(&Job::new(JobType::Accountant, document.id, 0))
+            .await?;
+        crate::agents::db_helpers::record_document_event(
+            pool,
+            document.id,
+            "ACCOUNTING_PROCESSING_QUEUED",
+            json!({ "document_short_ref": document.short_ref }),
+        )
+        .await?;
+    }
+
+    Ok(AccountingProcessingExecution {
+        queued_documents: documents.to_vec(),
+    })
+}
+
+pub(crate) fn describe_accounting_processing_preview(
+    preview: &AccountingProcessingPreview,
+) -> String {
+    if preview.eligible_documents.is_empty() {
+        let skipped = describe_accounting_processing_skips(&preview.skipped);
+        return if skipped.is_empty() {
+            "No vision processed documents are currently eligible for accounting processing."
+                .to_string()
+        } else {
+            format!(
+                "No selected documents are eligible for accounting processing.\n\n{}",
+                skipped
+            )
+        };
+    }
+
+    let eligible_refs = preview
+        .eligible_documents
+        .iter()
+        .map(|document| document.short_ref.clone())
+        .collect::<Vec<_>>();
+
+    let lead = if preview.all_eligible {
+        format!(
+            "Found {} vision processed document(s) that can be sent to accounting: {}.",
+            preview.eligible_documents.len(),
+            eligible_refs.join(", ")
+        )
+    } else {
+        format!(
+            "{} selected document(s) can be sent to accounting: {}.",
+            preview.eligible_documents.len(),
+            eligible_refs.join(", ")
+        )
+    };
+
+    if preview.skipped.is_empty() {
+        format!("{lead}\n\nConfirm to start accounting processing.")
+    } else {
+        format!(
+            "{lead}\n\n{}\n\nConfirm to process only the eligible documents.",
+            describe_accounting_processing_skips(&preview.skipped)
+        )
+    }
+}
+
+pub(crate) fn describe_accounting_processing_execution(
+    execution: &AccountingProcessingExecution,
+) -> String {
+    let refs = execution
+        .queued_documents
+        .iter()
+        .map(|document| document.short_ref.clone())
+        .collect::<Vec<_>>();
+    format!(
+        "Queued {} vision processed document(s) for accounting: {}.",
+        execution.queued_documents.len(),
+        refs.join(", ")
+    )
+}
+
+fn candidate_is_accounting_eligible(candidate: &AccountingProcessingCandidate) -> bool {
+    candidate.status == "VISION_COMPLETE" && candidate.accounting_requested_at.is_none()
+}
+
+fn candidate_skip_reason(
+    candidate: &AccountingProcessingCandidate,
+) -> Option<AccountingProcessingSkip> {
+    if candidate_is_accounting_eligible(candidate) {
+        return None;
+    }
+
+    let reason =
+        if candidate.status == "VISION_COMPLETE" && candidate.accounting_requested_at.is_some() {
+            "already requested"
+        } else if matches!(candidate.status.as_str(), "RECEIVED" | "PROCESSING_VISION") {
+            "not ready yet"
+        } else {
+            "already processed or in progress"
+        };
+
+    Some(AccountingProcessingSkip {
+        short_ref: Some(candidate.short_ref.clone()),
+        status: Some(candidate.status.clone()),
+        reason,
+    })
+}
+
+fn describe_accounting_processing_skips(skipped: &[AccountingProcessingSkip]) -> String {
+    if skipped.is_empty() {
+        return String::new();
+    }
+
+    let mut lines = vec!["These documents cannot be processed right now:".to_string()];
+    for skip in skipped {
+        match (&skip.short_ref, &skip.status) {
+            (Some(short_ref), Some(status)) => {
+                lines.push(format!("- {}: {} ({})", short_ref, skip.reason, status));
+            }
+            (Some(short_ref), None) => lines.push(format!("- {}: {}", short_ref, skip.reason)),
+            (None, Some(status)) => lines.push(format!("- {} ({})", skip.reason, status)),
+            (None, None) => lines.push(format!("- {}", skip.reason)),
+        }
+    }
+    lines.join("\n")
 }
 
 pub(crate) async fn reopen_review_actions(
@@ -1042,6 +1301,7 @@ mod tests {
     use super::*;
     use crate::agents::review::{BlockingStage, RawBlockCause};
     use crate::db::ChannelType;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
     #[test]
     fn help_message_lists_intent_commands() {
@@ -1172,6 +1432,67 @@ mod tests {
         assert_eq!(
             format_document_line(&pending),
             "D000002 - Unknown supplier - N/A SEK - N/A - Missing VAT"
+        );
+    }
+
+    #[tokio::test]
+    async fn preview_accounting_processing_selection_reports_eligible_and_skipped_documents() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .in_memory(true)
+                    .foreign_keys(true),
+            )
+            .await
+            .expect("connect");
+        crate::db::run_migrations(&pool).await.expect("migrate");
+
+        for (status, requested) in [
+            ("VISION_COMPLETE", None),
+            ("VISION_COMPLETE", Some("2026-01-01T00:00:00Z")),
+            ("PROCESSING_VISION", None),
+        ] {
+            sqlx::query(
+                r#"
+                INSERT INTO documents (filename, status, file_hash, original_path, mime_type, accounting_requested_at)
+                VALUES ('doc.pdf', $1, $2, '/tmp/doc.pdf', 'application/pdf', $3)
+                "#,
+            )
+            .bind(status)
+            .bind(format!("preview-{}", uuid::Uuid::new_v4()))
+            .bind(requested)
+            .execute(&pool)
+            .await
+            .expect("insert document");
+        }
+
+        let refs: Vec<String> =
+            sqlx::query_scalar("SELECT short_ref FROM documents ORDER BY id ASC")
+                .fetch_all(&pool)
+                .await
+                .expect("refs");
+
+        let preview = preview_accounting_processing_selection(
+            &pool,
+            AccountingProcessingSelection::Many(refs),
+        )
+        .await
+        .expect("preview");
+
+        assert_eq!(preview.eligible_documents.len(), 1);
+        assert_eq!(preview.skipped.len(), 2);
+        assert!(
+            preview
+                .skipped
+                .iter()
+                .any(|skip| skip.reason == "already requested")
+        );
+        assert!(
+            preview
+                .skipped
+                .iter()
+                .any(|skip| skip.reason == "not ready yet")
         );
     }
 

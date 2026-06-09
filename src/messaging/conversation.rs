@@ -437,6 +437,7 @@ fn list_topic_for_tool(tool_name: &str) -> Option<&'static str> {
         "explain_document" => Some("document explanation"),
         "list_pending_reviews" => Some("pending review documents"),
         "list_export_ready" => Some("export-ready documents"),
+        "list_accounting_eligible_documents" => Some("vision processed documents"),
         _ => None,
     }
 }
@@ -446,6 +447,7 @@ fn action_topic_for_tool(tool_name: &str) -> Option<&'static str> {
         "prepare_open_review" => Some("open document review"),
         "prepare_retry_document" => Some("retry document processing"),
         "prepare_export_documents" => Some("export documents"),
+        "prepare_process_accounting_documents" => Some("process documents for accounting"),
         _ => None,
     }
 }

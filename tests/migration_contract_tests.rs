@@ -48,6 +48,15 @@ fn mcp_key_migration_contains_mcp_key_contracts() {
     assert!(migration.contains("created_by_user_id INTEGER NOT NULL REFERENCES users(id)"));
 }
 
+#[test]
+fn accounting_requested_migration_adds_documents_column() {
+    let migration = include_str!("../migrations/005_accounting_requested.sql");
+
+    assert!(migration.contains("ALTER TABLE documents"));
+    assert!(migration.contains("ADD COLUMN accounting_requested_at TEXT"));
+    assert!(migration.contains("idx_documents_accounting_requested"));
+}
+
 #[tokio::test]
 async fn embedded_sqlx_migrations_create_application_schema() {
     let pool = common::in_memory_pool().await;

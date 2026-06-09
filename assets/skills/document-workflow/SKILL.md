@@ -33,6 +33,7 @@ This skill covers:
 - identifying what needs attention or what is ready for export
 - explaining why one document is blocked, pending, failed, or ready
 - processing uploaded documents such as receipts, invoices, and financial documents
+- using documents that have already been vision processed and are ready for downstream workflows
 - managing accounting review flows and document actions
 - helping users send a receipt, invoice, file, or image directly in the chat when they want to upload one
 - review, retry, reprocess, and export workflow requests when they are explicitly asked for
@@ -49,6 +50,7 @@ Use this skill when the user asks about:
 - one-document operational follow-ups
 - uploading or sending a receipt, invoice, or financial document
 - processing a document
+- processing one or more vision processed documents for accounting
 - opening review or document review workflow
 - retrying or reprocessing a document
 - exporting documents
@@ -73,11 +75,16 @@ Do not use this skill when:
 5. For export-ready queue questions, use `list_export_ready`.
 6. For one-document detail lookups, use `get_document`.
 7. For questions about why one document is blocked, pending, failed, or ready, use `explain_document`.
-8. Mutating tools only prepare a user confirmation prompt; they do not execute changes.
-9. Use `prepare_open_review` only when the user explicitly asks to review or open review for a document.
-10. Use `prepare_retry_document` only when the user explicitly asks to retry or reprocess a document.
-11. Use `prepare_export_documents` only when the user explicitly asks to export documents.
-12. For ambiguous wording such as whether something should be reviewed, retried, or exported, answer or ask a clarifying question instead of preparing a confirmation.
+8. Documents are uploaded and vision processed automatically. Accounting does not start automatically after vision.
+9. When the user wants to find documents that are vision processed and can now be sent to accounting, use `list_accounting_eligible_documents`.
+10. For one-document detail lookups, use `get_document`.
+11. For questions about why one document is blocked, pending, failed, or ready, use `explain_document`.
+12. Mutating tools only prepare a user confirmation prompt; they do not execute changes.
+13. Use `prepare_process_accounting_documents` only when the user explicitly asks to start accounting processing for one, several, or all eligible documents.
+14. Use `prepare_open_review` only when the user explicitly asks to review or open review for a document.
+15. Use `prepare_retry_document` only when the user explicitly asks to retry or reprocess a document.
+16. Use `prepare_export_documents` only when the user explicitly asks to export documents.
+17. For ambiguous wording such as whether something should be processed, reviewed, retried, or exported, answer or ask a clarifying question instead of preparing a confirmation.
 
 ## Examples
 
@@ -88,6 +95,7 @@ Do not use this skill when:
 - `Why is D000123 blocked?`
 - `I want to upload a receipt`
 - `Process this invoice`
+- `Process all vision processed documents`
 - `Open review for this document`
 - `Retry this document`
 - `Reprocess this invoice`

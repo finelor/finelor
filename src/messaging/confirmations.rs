@@ -14,6 +14,7 @@ pub enum AgentConfirmationActionKind {
     OpenReview,
     RetryDocument,
     ExportDocuments,
+    ProcessAccountingDocuments,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

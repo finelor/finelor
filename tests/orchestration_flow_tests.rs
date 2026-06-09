@@ -87,7 +87,7 @@ async fn run_next_job(
 }
 
 #[tokio::test]
-async fn queued_pipeline_runs_vision_accountant_validator_and_review_boundaries() {
+async fn queued_pipeline_runs_vision_then_explicit_accounting_pipeline() {
     let pool = common::in_memory_pool().await;
     let queue = common::test_queue();
     let producer = QueueProducer::new(queue.clone());
@@ -115,6 +115,19 @@ async fn queued_pipeline_runs_vision_accountant_validator_and_review_boundaries(
         .await
         .expect("vision status");
     assert_eq!(status, DocumentStatus::VisionComplete.as_str());
+    assert!(consumer_queue_empty(&queue).await);
+
+    sqlx::query(
+        "UPDATE documents SET accounting_requested_at = '2026-01-01T00:00:00Z' WHERE id = $1",
+    )
+    .bind(document_id)
+    .execute(&pool)
+    .await
+    .expect("mark accounting requested");
+    producer
+        .enqueue(&Job::new(JobType::Accountant, document_id, 0))
+        .await
+        .expect("enqueue accountant");
 
     let accountant_job = run_next_job(&pool, &queue, &producer, fake.clone()).await;
     assert!(matches!(accountant_job.job_type, JobType::Accountant));
@@ -147,6 +160,11 @@ async fn queued_pipeline_runs_vision_accountant_validator_and_review_boundaries(
         final_status.as_str(),
         "EXPORT_READY" | "PENDING_HUMAN_REVIEW"
     ));
+}
+
+async fn consumer_queue_empty(queue: &Arc<finelor::queue::InMemoryJobQueue>) -> bool {
+    let consumer = QueueConsumer::new(queue.clone(), "empty-check");
+    consumer.poll(1).await.expect("poll empty").is_empty()
 }
 
 #[tokio::test]

@@ -263,7 +263,7 @@ pub async fn recover_incomplete_jobs(
 ) -> AppResult<usize> {
     let rows = sqlx::query(
         r#"
-        SELECT id, status, priority
+        SELECT id, status, priority, accounting_requested_at
         FROM documents
         WHERE status IN (
             'RECEIVED',
@@ -285,8 +285,11 @@ pub async fn recover_incomplete_jobs(
         let document_id: i64 = row.try_get("id")?;
         let status: String = row.try_get("status")?;
         let priority: Option<String> = row.try_get("priority")?;
+        let accounting_requested_at: Option<String> = row.try_get("accounting_requested_at")?;
 
-        let Some(job_type) = recoverable_job_type(status.as_str()) else {
+        let Some(job_type) =
+            recoverable_job_type(status.as_str(), accounting_requested_at.as_deref())
+        else {
             continue;
         };
 
@@ -314,10 +317,12 @@ pub async fn recover_incomplete_jobs(
     Ok(recovered)
 }
 
-fn recoverable_job_type(status: &str) -> Option<JobType> {
+fn recoverable_job_type(status: &str, accounting_requested_at: Option<&str>) -> Option<JobType> {
     match status {
         "RECEIVED" | "PROCESSING_VISION" => Some(JobType::Vision),
-        "VISION_COMPLETE" | "PROCESSING_ACCOUNTANT" => Some(JobType::Accountant),
+        "VISION_COMPLETE" if accounting_requested_at.is_some() => Some(JobType::Accountant),
+        "VISION_COMPLETE" => None,
+        "PROCESSING_ACCOUNTANT" => Some(JobType::Accountant),
         "ACCOUNTANT_REVIEWED" | "PROCESSING_VALIDATOR" => Some(JobType::Validator),
         "VALIDATED" => Some(JobType::Review),
         _ => None,
@@ -364,41 +369,39 @@ mod tests {
 
     #[test]
     fn recoverable_statuses_map_to_resume_jobs() {
-        let recoverable_statuses = [
+        for status in [
             "RECEIVED",
             "PROCESSING_VISION",
-            "VISION_COMPLETE",
             "PROCESSING_ACCOUNTANT",
             "ACCOUNTANT_REVIEWED",
             "PROCESSING_VALIDATOR",
             "VALIDATED",
-        ];
-
-        for status in recoverable_statuses {
+        ] {
             assert!(
-                recoverable_job_type(status).is_some(),
+                recoverable_job_type(status, None).is_some(),
                 "{status} must map to a resume job"
             );
         }
 
         assert!(matches!(
-            recoverable_job_type("PROCESSING_VISION"),
+            recoverable_job_type("PROCESSING_VISION", None),
             Some(JobType::Vision)
         ));
+        assert!(recoverable_job_type("VISION_COMPLETE", None).is_none());
         assert!(matches!(
-            recoverable_job_type("VISION_COMPLETE"),
+            recoverable_job_type("VISION_COMPLETE", Some("2026-01-01T00:00:00Z")),
             Some(JobType::Accountant)
         ));
         assert!(matches!(
-            recoverable_job_type("ACCOUNTANT_REVIEWED"),
+            recoverable_job_type("ACCOUNTANT_REVIEWED", None),
             Some(JobType::Validator)
         ));
         assert!(matches!(
-            recoverable_job_type("VALIDATED"),
+            recoverable_job_type("VALIDATED", None),
             Some(JobType::Review)
         ));
-        assert!(recoverable_job_type("FAILED").is_none());
-        assert!(recoverable_job_type("EXPORT_READY").is_none());
+        assert!(recoverable_job_type("FAILED", None).is_none());
+        assert!(recoverable_job_type("EXPORT_READY", None).is_none());
     }
 
     #[test]
