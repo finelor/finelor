@@ -437,7 +437,7 @@ fn list_topic_for_tool(tool_name: &str) -> Option<&'static str> {
         "explain_document" => Some("document explanation"),
         "list_pending_reviews" => Some("pending review documents"),
         "list_export_ready" => Some("export-ready documents"),
-        "list_accounting_eligible_documents" => Some("vision processed documents"),
+        "list_accounting_eligible_documents" => Some("ingested documents"),
         _ => None,
     }
 }

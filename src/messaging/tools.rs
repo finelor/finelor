@@ -9,7 +9,7 @@ use crate::query::{
     DocumentSummary, count_accounting_eligible_documents, count_documents,
     count_documents_by_status, count_documents_requiring_attention, document_status_counts,
     document_summary_by_short_ref, list_accounting_eligible_documents, list_documents_by_status,
-    list_documents_requiring_attention, list_recent_documents,
+    list_documents_requiring_attention, list_recent_documents, workspace_identity,
 };
 use crate::skills::SkillRegistry;
 
@@ -62,7 +62,7 @@ pub fn read_only_tool_catalog() -> Vec<AppToolDefinition> {
     vec![
         AppToolDefinition {
             name: "document_status_summary",
-            description: "Get exact company document counts by processing status. Use for count questions.",
+            description: "Get the current live company document totals and processing counts, including how many documents exist, how many are being processed, and the current status buckets. Use this for status, live status, current status, or count questions, and do not answer those from memory when this tool is available.",
             input_schema: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
         },
         AppToolDefinition {
@@ -120,7 +120,7 @@ pub fn read_only_tool_catalog() -> Vec<AppToolDefinition> {
         },
         AppToolDefinition {
             name: "list_accounting_eligible_documents",
-            description: "List company documents that are vision processed and can now be sent to accounting, with exact total_count and compact returned items.",
+            description: "List company documents that are ingested and can now be sent to accounting, with exact total_count and compact returned items.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -196,7 +196,7 @@ pub fn mutating_prepare_tool_catalog() -> Vec<AppToolDefinition> {
         },
         AppToolDefinition {
             name: "prepare_process_accounting_documents",
-            description: "Prepare a confirmation prompt to start accounting processing for one, several, or all vision processed documents. Use only when the user explicitly asks to process documents for accounting.",
+            description: "Prepare a confirmation prompt to start accounting processing for one, several, or all ingested documents. Use only when the user explicitly asks to process documents for accounting.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -311,12 +311,17 @@ async fn execute_read_only_tool_inner(
 
 async fn document_status_summary(pool: &DbPool) -> anyhow::Result<serde_json::Value> {
     let counts = document_status_counts(pool).await?;
+    let identity = workspace_identity(pool).await?;
+    let processing_jurisdiction = identity.and_then(|identity| identity.jurisdiction);
     Ok(json!({
-        "processing": counts.processing_count,
+        "documents_total": counts.total_count,
+        "documents_processing": counts.processing_count,
         "pending_review": counts.pending_count,
         "export_ready": counts.ready_count,
         "exported": counts.exported_count,
         "failed": counts.failed_count,
+        "processing_jurisdiction": processing_jurisdiction,
+        "documents_processing_in_jurisdiction": counts.processing_count,
     }))
 }
 
@@ -850,6 +855,116 @@ mod tests {
             value["result"]["items"][0]["status"],
             json!("VISION_COMPLETE")
         );
+    }
+
+    #[tokio::test]
+    async fn document_status_summary_returns_totals_and_jurisdiction_context() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .in_memory(true)
+                    .foreign_keys(true),
+            )
+            .await
+            .expect("connect");
+        crate::db::run_migrations(&pool).await.expect("migrate");
+
+        sqlx::query("UPDATE company_profile SET jurisdiction = 'SE' WHERE singleton = 1")
+            .execute(&pool)
+            .await
+            .expect("set jurisdiction");
+
+        for status in [
+            "RECEIVED",
+            "PENDING_HUMAN_REVIEW",
+            "EXPORT_READY",
+            "EXPORTED",
+            "FAILED",
+        ] {
+            sqlx::query(
+                r#"
+                INSERT INTO documents (filename, status, file_hash, original_path, mime_type)
+                VALUES ('doc.pdf', $1, $2, '/tmp/doc.pdf', 'application/pdf')
+                "#,
+            )
+            .bind(status)
+            .bind(format!("status-{}", uuid::Uuid::new_v4()))
+            .execute(&pool)
+            .await
+            .expect("insert document");
+        }
+
+        let value = execute_read_only_tool(
+            &pool,
+            None,
+            &ReadOnlyToolCall {
+                name: "document_status_summary".to_string(),
+                args: json!({}),
+            },
+        )
+        .await;
+
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["result"]["documents_total"], 5);
+        assert_eq!(value["result"]["documents_processing"], 1);
+        assert_eq!(value["result"]["pending_review"], 1);
+        assert_eq!(value["result"]["export_ready"], 1);
+        assert_eq!(value["result"]["exported"], 1);
+        assert_eq!(value["result"]["failed"], 1);
+        assert_eq!(value["result"]["processing_jurisdiction"], "SE");
+        assert_eq!(value["result"]["documents_processing_in_jurisdiction"], 1);
+    }
+
+    #[tokio::test]
+    async fn document_status_summary_uses_deterministic_jurisdiction_fallback() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .in_memory(true)
+                    .foreign_keys(true),
+            )
+            .await
+            .expect("connect");
+        crate::db::run_migrations(&pool).await.expect("migrate");
+
+        sqlx::query("UPDATE company_profile SET jurisdiction = '' WHERE singleton = 1")
+            .execute(&pool)
+            .await
+            .expect("clear jurisdiction");
+
+        for status in ["RECEIVED", "PROCESSING_ACCOUNTANT"] {
+            sqlx::query(
+                r#"
+                INSERT INTO documents (filename, status, file_hash, original_path, mime_type)
+                VALUES ('doc.pdf', $1, $2, '/tmp/doc.pdf', 'application/pdf')
+                "#,
+            )
+            .bind(status)
+            .bind(format!("fallback-{}", uuid::Uuid::new_v4()))
+            .execute(&pool)
+            .await
+            .expect("insert document");
+        }
+
+        let value = execute_read_only_tool(
+            &pool,
+            None,
+            &ReadOnlyToolCall {
+                name: "document_status_summary".to_string(),
+                args: json!({}),
+            },
+        )
+        .await;
+
+        assert_eq!(value["ok"], true);
+        assert_eq!(
+            value["result"]["processing_jurisdiction"],
+            serde_json::Value::Null
+        );
+        assert_eq!(value["result"]["documents_processing"], 2);
+        assert_eq!(value["result"]["documents_processing_in_jurisdiction"], 2);
     }
 
     #[test]

@@ -17,8 +17,8 @@ pub enum InterventionAudience {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InterventionKind {
-    SenderProgress,
     SenderClarification,
+    SenderDuplicate,
     AccountingReview,
     AccountingNotification,
     AuditOnly,
@@ -136,6 +136,7 @@ async fn pending_document_event_candidates(
         WHERE e.created_at >= $1
           AND e.event_type IN (
             'VISION_COMPLETED',
+            'DUPLICATE_DETECTED',
             'REVIEW_HUMAN_REQUESTED',
             'DOCUMENT_FAILED',
             'REVIEW_QUARANTINED',
@@ -209,9 +210,9 @@ fn classify_document_event(
     }
 
     match event_type {
-        "VISION_COMPLETED" => Some((
+        "DUPLICATE_DETECTED" => Some((
             InterventionAudience::Sender,
-            InterventionKind::SenderProgress,
+            InterventionKind::SenderDuplicate,
         )),
         "REVIEW_HUMAN_REQUESTED" | "REVIEW_QUARANTINED" => Some((
             InterventionAudience::Accounting,
@@ -241,7 +242,6 @@ async fn build_intervention_response(
     kind: InterventionKind,
 ) -> anyhow::Result<GatewayMessageResponse> {
     match kind {
-        InterventionKind::SenderProgress => sender_progress_response(pool, event).await,
         InterventionKind::SenderClarification => Ok(GatewayMessageResponse {
             message: payload
                 .get("question")
@@ -257,6 +257,7 @@ async fn build_intervention_response(
             attachments: Vec::new(),
             buttons: None,
         }),
+        InterventionKind::SenderDuplicate => Ok(sender_duplicate_response(event)),
         InterventionKind::AccountingReview => reopen_review_actions(pool, &event.short_ref).await,
         InterventionKind::AccountingNotification => {
             Ok(accounting_notification_response(event, payload))
@@ -265,25 +266,16 @@ async fn build_intervention_response(
     }
 }
 
-async fn sender_progress_response(
-    pool: &DbPool,
-    event: &DocumentEventCandidate,
-) -> anyhow::Result<GatewayMessageResponse> {
-    let details = document_brief_details(pool, event.document_id).await?;
-    let mut message = format!("Recorded {}.", event.short_ref);
-
-    if let Some(summary) = details {
-        message = format!("Recorded {}. {}", event.short_ref, summary);
-    }
-
-    message.push_str(" Vision processed. It has not been sent to accounting yet.");
-
-    Ok(GatewayMessageResponse {
-        message,
+fn sender_duplicate_response(event: &DocumentEventCandidate) -> GatewayMessageResponse {
+    GatewayMessageResponse {
+        message: format!(
+            "This document is already processed and won't be processed again. Existing ref: {}.",
+            event.short_ref
+        ),
         format: GatewayMessageFormat::PlainText,
         attachments: Vec::new(),
         buttons: None,
-    })
+    }
 }
 
 fn accounting_notification_response(
@@ -313,50 +305,6 @@ fn accounting_notification_response(
         format: GatewayMessageFormat::Markdown,
         attachments: Vec::new(),
         buttons: None,
-    }
-}
-
-async fn document_brief_details(pool: &DbPool, document_id: i64) -> anyhow::Result<Option<String>> {
-    let supplier: Option<String> = sqlx::query_scalar(
-        r#"
-        SELECT COALESCE(parsed_value, raw_value)
-        FROM extracted_fields
-        WHERE document_id = $1
-          AND field_type IN ('supplier_name', 'supplier', 'merchant_name')
-        ORDER BY created_at DESC
-        LIMIT 1
-        "#,
-    )
-    .bind(document_id)
-    .fetch_optional(pool)
-    .await?;
-
-    let amount: Option<String> = sqlx::query_scalar(
-        r#"
-        SELECT COALESCE(parsed_value, raw_value)
-        FROM extracted_fields
-        WHERE document_id = $1
-          AND field_type IN ('total_amount', 'amount', 'gross_amount')
-        ORDER BY created_at DESC
-        LIMIT 1
-        "#,
-    )
-    .bind(document_id)
-    .fetch_optional(pool)
-    .await?;
-
-    let mut parts = Vec::new();
-    if let Some(supplier) = supplier.filter(|value| !value.trim().is_empty()) {
-        parts.push(supplier);
-    }
-    if let Some(amount) = amount.filter(|value| !value.trim().is_empty()) {
-        parts.push(amount);
-    }
-
-    if parts.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(parts.join(", ")))
     }
 }
 
@@ -470,19 +418,15 @@ mod tests {
     use crate::db::run_migrations;
 
     #[test]
-    fn classifies_sender_progress_from_vision_completion() {
-        let classified = classify_document_event("VISION_COMPLETED", &json!({}));
+    fn vision_completed_is_not_a_sender_intervention() {
         assert_eq!(
-            classified,
-            Some((
-                InterventionAudience::Sender,
-                InterventionKind::SenderProgress
-            ))
+            classify_document_event("VISION_COMPLETED", &json!({})),
+            None
         );
     }
 
     #[tokio::test]
-    async fn sender_progress_response_reflects_post_vision_boundary() {
+    async fn duplicate_detected_builds_sender_duplicate_message() {
         let pool = SqlitePool::connect("sqlite::memory:")
             .await
             .expect("connect sqlite");
@@ -502,23 +446,91 @@ mod tests {
         let event = DocumentEventCandidate {
             event_id: 1,
             document_id,
-            short_ref,
+            short_ref: short_ref.clone(),
             status: "VISION_COMPLETE".to_string(),
-            event_type: "VISION_COMPLETED".to_string(),
+            event_type: "DUPLICATE_DETECTED".to_string(),
             payload: None,
             created_at: Utc::now(),
         };
 
-        let response = sender_progress_response(&pool, &event)
-            .await
-            .expect("build sender progress response");
+        let response = build_intervention_response(
+            &pool,
+            &event,
+            &json!({}),
+            InterventionKind::SenderDuplicate,
+        )
+        .await
+        .expect("build sender duplicate response");
 
-        assert!(
-            response
-                .message
-                .contains("Vision processed. It has not been sent to accounting yet.")
+        assert_eq!(
+            response.message,
+            format!(
+                "This document is already processed and won't be processed again. Existing ref: {}.",
+                short_ref
+            )
         );
-        assert!(!response.message.contains("Forwarding to accounting."));
+    }
+
+    #[tokio::test]
+    async fn duplicate_detected_is_pending_sender_intervention() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect sqlite");
+        run_migrations(&pool).await.expect("run migrations");
+
+        let document_id = sqlx::query_scalar::<_, i64>(
+            r#"
+            INSERT INTO documents (filename, status, file_hash, original_path, mime_type)
+            VALUES ('receipt.jpg', 'VISION_COMPLETE', 'hash-2', '/tmp/receipt.jpg', 'image/jpeg')
+            RETURNING id
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("insert document");
+
+        sqlx::query(
+            r#"
+            INSERT INTO document_artifacts (
+                document_id,
+                channel_type,
+                channel_identifier,
+                profile_identifier,
+                source_timestamp,
+                original_filename,
+                metadata
+            )
+            VALUES ($1, 'TELEGRAM', '12345', '12345', NULL, 'receipt.jpg', '{}')
+            "#,
+        )
+        .bind(document_id)
+        .execute(&pool)
+        .await
+        .expect("insert artifact");
+
+        let event_id = sqlx::query_scalar::<_, i64>(
+            r#"
+            INSERT INTO document_events (document_id, event_type, payload)
+            VALUES ($1, 'DUPLICATE_DETECTED', '{"short_ref":"D000001"}')
+            RETURNING id
+            "#,
+        )
+        .bind(document_id)
+        .fetch_one(&pool)
+        .await
+        .expect("insert event");
+
+        let candidate = document_intervention_candidate_by_event_id(&pool, event_id)
+            .await
+            .expect("fetch candidate")
+            .expect("candidate exists");
+        let intervention = build_document_intervention(&pool, candidate, None)
+            .await
+            .expect("build intervention")
+            .expect("intervention exists");
+
+        assert_eq!(intervention.kind, InterventionKind::SenderDuplicate);
+        assert_eq!(intervention.audience, InterventionAudience::Sender);
     }
 
     #[test]

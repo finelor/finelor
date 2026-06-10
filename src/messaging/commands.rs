@@ -158,15 +158,30 @@ pub fn build_help_message() -> String {
 
 async fn build_status_message(pool: &DbPool) -> anyhow::Result<String> {
     let counts = document_status_counts(pool).await?;
+    let jurisdiction = crate::query::workspace_identity(pool)
+        .await?
+        .and_then(|identity| identity.jurisdiction);
     let last = latest_document(pool).await?;
     let mut lines = vec![
         "Finelor status:".to_string(),
-        format!("Processing: {}", counts.processing_count),
+        format!("Documents in system: {}", counts.total_count),
+        format!("Being processed: {}", counts.processing_count),
         format!("Pending review: {}", counts.pending_count),
         format!("Export ready: {}", counts.ready_count),
         format!("Exported: {}", counts.exported_count),
         format!("Failed: {}", counts.failed_count),
     ];
+
+    match jurisdiction {
+        Some(jurisdiction) => lines.push(format!(
+            "Being processed in {}: {}",
+            jurisdiction, counts.processing_count
+        )),
+        None => lines.push(format!(
+            "Being processed in workspace jurisdiction: {}",
+            counts.processing_count
+        )),
+    }
 
     if let Some(last) = last {
         lines.push(String::new());
@@ -674,8 +689,7 @@ pub(crate) fn describe_accounting_processing_preview(
     if preview.eligible_documents.is_empty() {
         let skipped = describe_accounting_processing_skips(&preview.skipped);
         return if skipped.is_empty() {
-            "No vision processed documents are currently eligible for accounting processing."
-                .to_string()
+            "No ingested documents are currently eligible for accounting processing.".to_string()
         } else {
             format!(
                 "No selected documents are eligible for accounting processing.\n\n{}",
@@ -692,7 +706,7 @@ pub(crate) fn describe_accounting_processing_preview(
 
     let lead = if preview.all_eligible {
         format!(
-            "Found {} vision processed document(s) that can be sent to accounting: {}.",
+            "Found {} ingested document(s) that can be sent to accounting: {}.",
             preview.eligible_documents.len(),
             eligible_refs.join(", ")
         )
@@ -723,7 +737,7 @@ pub(crate) fn describe_accounting_processing_execution(
         .map(|document| document.short_ref.clone())
         .collect::<Vec<_>>();
     format!(
-        "Queued {} vision processed document(s) for accounting: {}.",
+        "Queued {} ingested document(s) for accounting: {}.",
         execution.queued_documents.len(),
         refs.join(", ")
     )

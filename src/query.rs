@@ -15,6 +15,7 @@ pub struct WorkspaceIdentity {
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct DocumentStatusCounts {
+    pub total_count: i64,
     pub processing_count: i64,
     pub pending_count: i64,
     pub ready_count: i64,
@@ -140,11 +141,12 @@ pub async fn document_status_counts(pool: &DbPool) -> anyhow::Result<DocumentSta
     let counts = sqlx::query_as(
         r#"
         SELECT
-            SUM(CASE WHEN status IN ('RECEIVED', 'PROCESSING_VISION', 'VISION_COMPLETE', 'PROCESSING_ACCOUNTANT', 'ACCOUNTANT_REVIEWED', 'PROCESSING_VALIDATOR', 'VALIDATED', 'GENERATING_SIE4', 'REVIEW_COMPLETED') THEN 1 ELSE 0 END) AS processing_count,
-            SUM(CASE WHEN status = 'PENDING_HUMAN_REVIEW' THEN 1 ELSE 0 END) AS pending_count,
-            SUM(CASE WHEN status = 'EXPORT_READY' THEN 1 ELSE 0 END) AS ready_count,
-            SUM(CASE WHEN status = 'EXPORTED' THEN 1 ELSE 0 END) AS exported_count,
-            SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END) AS failed_count
+            COUNT(*) AS total_count,
+            COALESCE(SUM(CASE WHEN status IN ('RECEIVED', 'PROCESSING_VISION', 'VISION_COMPLETE', 'PROCESSING_ACCOUNTANT', 'ACCOUNTANT_REVIEWED', 'PROCESSING_VALIDATOR', 'VALIDATED', 'GENERATING_SIE4', 'REVIEW_COMPLETED') THEN 1 ELSE 0 END), 0) AS processing_count,
+            COALESCE(SUM(CASE WHEN status = 'PENDING_HUMAN_REVIEW' THEN 1 ELSE 0 END), 0) AS pending_count,
+            COALESCE(SUM(CASE WHEN status = 'EXPORT_READY' THEN 1 ELSE 0 END), 0) AS ready_count,
+            COALESCE(SUM(CASE WHEN status = 'EXPORTED' THEN 1 ELSE 0 END), 0) AS exported_count,
+            COALESCE(SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END), 0) AS failed_count
         FROM documents
         "#,
     )
