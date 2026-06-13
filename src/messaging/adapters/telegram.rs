@@ -25,6 +25,9 @@ use crate::web::events::{
     update_telegram_connect_session_status,
 };
 
+const TELEGRAM_NOT_ENABLED_MESSAGE: &str =
+    "Finelor is not enabled for this Telegram chat. Ask your workspace admin to connect it.";
+
 pub async fn run_telegram_bot(
     bot: Bot,
     state: AgentGatewayState,
@@ -122,11 +125,19 @@ pub async fn handle_telegram_message(
         "Telegram message received"
     );
 
-    if let Some(text) = msg.text() {
-        if text.strip_prefix("/start ").is_some() {
-            return handle_text_command(bot, msg.clone(), text, state).await;
-        }
+    if let Some(text) = msg.text()
+        && text.strip_prefix("/start ").is_some()
+    {
+        return handle_text_command(bot, msg.clone(), text, state).await;
+    }
 
+    if !telegram_chat_authorized(&state, chat_id).await {
+        bot.send_message(chat_id, TELEGRAM_NOT_ENABLED_MESSAGE)
+            .await?;
+        return Ok(());
+    }
+
+    if let Some(text) = msg.text() {
         return handle_agent_chat_text(bot, msg.clone(), text, state).await;
     }
 
@@ -480,6 +491,22 @@ pub async fn handle_telegram_callback_query(
         .as_ref()
         .map(|message| message.chat().id.0)
         .unwrap_or(query.from.id.0 as i64);
+    let interaction_chat = ChatId(interaction_chat_id);
+    if !telegram_chat_authorized(&state, interaction_chat).await {
+        if let Err(err) = bot
+            .answer_callback_query(query.id.clone())
+            .text("Not allowed")
+            .await
+        {
+            error!(error = %err, "Failed to answer unauthorized callback query");
+        }
+        if let Some(message) = query.message {
+            bot.send_message(message.chat().id, TELEGRAM_NOT_ENABLED_MESSAGE)
+                .await?;
+        }
+        return Ok(());
+    }
+
     let source_profile_identifier = query.from.id.0.to_string();
     let action = match parse_document_action(callback_data) {
         Ok(action) => action,
@@ -1023,6 +1050,33 @@ fn publish_channels_changed_event(state: &AgentGatewayState, workspace_id: Uuid)
     ));
 }
 
+async fn telegram_chat_authorized(state: &AgentGatewayState, chat_id: ChatId) -> bool {
+    match sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM channel_identities
+        WHERE channel_type = $1
+          AND channel_identifier = $2
+          AND active = TRUE
+        "#,
+    )
+    .bind(db::ChannelType::Telegram.as_str())
+    .bind(chat_id.0.to_string())
+    .fetch_one(&state.pool)
+    .await
+    {
+        Ok(match_count) => match_count > 0,
+        Err(err) => {
+            warn!(
+                error = %err,
+                chat_id = chat_id.0,
+                "Failed to check Telegram chat authorization"
+            );
+            false
+        }
+    }
+}
+
 async fn handle_photo(
     bot: Bot,
     msg: Message,
@@ -1212,6 +1266,21 @@ fn build_stored_upload_filename(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
+    use std::sync::Arc;
+
+    use sqlx::SqlitePool;
+    use tokio::sync::Mutex;
+
+    use crate::config::{
+        AppConfig, DatabaseConfig, ExportConfig, LoggingConfig, MessagingConfig, MessagingProvider,
+        OllamaConfig, OllamaModels, SessionConfig, SlackConfig, TelegramConfig, UploadConfig,
+        WebConfig, WorkerConfig,
+    };
+    use crate::kv::EphemeralStore;
+    use crate::messaging::gateway::AgentGatewayState;
+    use crate::queue::{InMemoryJobQueue, QueueProducer};
+    use crate::web::events::AppEventBus;
 
     #[test]
     fn renders_markdown_to_telegram_html() {
@@ -1276,5 +1345,165 @@ mod tests {
     fn telegram_media_is_document_for_non_image_mime_types() {
         assert!(!telegram_media_is_photo("application/pdf"));
         assert!(!telegram_media_is_photo("application/octet-stream"));
+    }
+
+    #[tokio::test]
+    async fn telegram_chat_authorized_for_active_connected_chat() {
+        let state = test_gateway_state(true).await;
+
+        insert_channel_identity(&state.pool, "TELEGRAM", "12345", true).await;
+
+        assert!(telegram_chat_authorized(&state, ChatId(12345)).await);
+    }
+
+    #[tokio::test]
+    async fn telegram_chat_denied_for_inactive_connected_chat() {
+        let state = test_gateway_state(true).await;
+
+        insert_channel_identity(&state.pool, "TELEGRAM", "12345", false).await;
+
+        assert!(!telegram_chat_authorized(&state, ChatId(12345)).await);
+    }
+
+    #[tokio::test]
+    async fn telegram_chat_denied_when_missing() {
+        let state = test_gateway_state(true).await;
+
+        assert!(!telegram_chat_authorized(&state, ChatId(12345)).await);
+    }
+
+    #[tokio::test]
+    async fn telegram_chat_denied_for_non_telegram_identity() {
+        let state = test_gateway_state(true).await;
+
+        insert_channel_identity(&state.pool, "SLACK", "12345", true).await;
+
+        assert!(!telegram_chat_authorized(&state, ChatId(12345)).await);
+    }
+
+    #[tokio::test]
+    async fn telegram_chat_authorization_fails_closed_on_query_error() {
+        let state = test_gateway_state(false).await;
+
+        assert!(!telegram_chat_authorized(&state, ChatId(12345)).await);
+    }
+
+    async fn test_gateway_state(with_channel_identities: bool) -> AgentGatewayState {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect in-memory sqlite");
+
+        if with_channel_identities {
+            sqlx::query(
+                r#"
+                CREATE TABLE channel_identities (
+                  id INTEGER PRIMARY KEY,
+                  channel_type TEXT NOT NULL,
+                  channel_identifier TEXT NOT NULL,
+                  metadata TEXT,
+                  active INTEGER NOT NULL DEFAULT 1,
+                  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                "#,
+            )
+            .execute(&pool)
+            .await
+            .expect("create channel_identities table");
+        }
+
+        AgentGatewayState {
+            config: Arc::new(test_config()),
+            pool,
+            queue_producer: QueueProducer::new(Arc::new(InMemoryJobQueue::new())),
+            ephemeral_store: EphemeralStore::new(),
+            events: AppEventBus::new(16),
+            running_sessions: Arc::new(Mutex::new(HashSet::new())),
+            active_document_interaction_sessions: Arc::new(Mutex::new(HashSet::new())),
+        }
+    }
+
+    async fn insert_channel_identity(
+        pool: &SqlitePool,
+        channel_type: &str,
+        channel_identifier: &str,
+        active: bool,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO channel_identities (channel_type, channel_identifier, active)
+            VALUES ($1, $2, $3)
+            "#,
+        )
+        .bind(channel_type)
+        .bind(channel_identifier)
+        .bind(active)
+        .execute(pool)
+        .await
+        .expect("insert channel identity");
+    }
+
+    fn test_config() -> AppConfig {
+        AppConfig {
+            ollama: OllamaConfig {
+                base_url: "http://localhost:11434".to_string(),
+                api_key: None,
+                models: OllamaModels {
+                    vision: "vision-model".to_string(),
+                    accountant: "accountant-model".to_string(),
+                    assistant: "assistant-model".to_string(),
+                },
+                vision_prompt_path: "assets/prompts/sweden/vision_agent.md".to_string(),
+                accountant_prompt_path: "assets/prompts/sweden/accountant_agent.md".to_string(),
+                assistant_soul_prompt_path: "assets/prompts/_shared/assistant_agent_soul.md"
+                    .to_string(),
+                timeout_seconds: 120,
+                max_retries: 3,
+                initial_backoff_ms: 500,
+                max_backoff_seconds: 10,
+            },
+            database: DatabaseConfig {
+                path: ":memory:".to_string(),
+                max_connections: 1,
+            },
+            session: SessionConfig {
+                secret: "test-secret".to_string(),
+                expiry_days: 30,
+                cleanup_interval_seconds: 3600,
+                secure: false,
+            },
+            worker: WorkerConfig { max_job_retries: 3 },
+            web: WebConfig {
+                allowed_hosts: vec!["localhost".to_string()],
+                allowed_origins: vec!["http://localhost:3000".to_string()],
+            },
+            messaging: MessagingConfig {
+                provider: MessagingProvider::Telegram,
+                telegram: TelegramConfig {
+                    bot_token: "dummy".to_string(),
+                    webhook_url: None,
+                },
+                slack: SlackConfig {
+                    bot_token: String::new(),
+                    app_token: String::new(),
+                },
+            },
+            upload: UploadConfig {
+                storage_path: "./.finelor/uploads".to_string(),
+            },
+            export: ExportConfig {
+                sie4_encoding: "PC8".to_string(),
+                download_expiry_hours: 168,
+                company_org_nr: "5560000000".to_string(),
+                company_name: "Your Company AB".to_string(),
+                fiscal_year_start: "20240101".to_string(),
+                fiscal_year_end: "20241231".to_string(),
+                output_path: "./.finelor/exports".to_string(),
+            },
+            logging: LoggingConfig {
+                level: "info".to_string(),
+                format: "json".to_string(),
+            },
+        }
     }
 }
