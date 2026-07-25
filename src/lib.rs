@@ -9,6 +9,8 @@ pub mod config;
 #[cfg(feature = "ssr")]
 pub mod db;
 #[cfg(feature = "ssr")]
+pub mod document_state;
+#[cfg(feature = "ssr")]
 pub mod error;
 #[cfg(feature = "ssr")]
 pub mod export;

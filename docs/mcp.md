@@ -185,13 +185,13 @@ Once Finelor MCP is configured, you can ask things like:
 - “Show me the current Finelor document status summary.”
 - “List the 10 most recent Finelor documents.”
 - “Explain why document D000123 is blocked.”
-- “Get the details for document D000123 and summarize the accounting status.”
-- “Which Finelor documents are still processing, and which are ready for export?”
+- “Get the details for document D000123 and summarize its intake and accounting status.”
+- “Which Finelor documents are still in intake processing, and which are ready for export?”
 
 Example follow-up prompts:
 
 - “List recent Finelor documents and point out any that need human review.”
-- “Explain the current status of D000123 in plain language.”
+- “Explain the current intake and accounting status of D000123 in plain language.”
 - “Compare the last five Finelor documents and tell me which ones are blocked or failed.”
 - “Summarize what is waiting in Finelor right now so I know what to review first.”
 
@@ -212,9 +212,9 @@ Available tools:
 
 | Tool | Capability | Description |
 | --- | --- | --- |
-| `document_status_summary` | `documents:read` | Returns exact document counts by processing status. |
-| `list_documents` | `documents:read` | Lists recent documents with exact total count and compact items. |
-| `get_document` | `documents:read` | Returns compact status/details for one document by `document_short_ref`. |
+| `document_status_summary` | `documents:read` | Returns exact document counts grouped by intake and accounting domains. |
+| `list_documents` | `documents:read` | Lists recent documents with exact total count and nested domain status summaries. |
+| `get_document` | `documents:read` | Returns compact document details plus nested domain status detail for one document by `document_short_ref`. |
 | `explain_document` | `documents:explain` | Explains why one document is blocked, pending, failed, or ready. |
 
 Not exposed in this version:

@@ -77,7 +77,15 @@ Response DTO:
 {
   "document_id": 123,
   "short_ref": "D000123",
-  "status": "RECEIVED"
+  "status": {
+    "intake": {
+      "status": "RECEIVED"
+    },
+    "accounting": {
+      "status": "NOT_REQUESTED",
+      "review_reason": null
+    }
+  }
 }
 ```
 
@@ -87,7 +95,10 @@ Fields:
 | --- | --- | --- |
 | `document_id` | integer | Internal numeric document id. |
 | `short_ref` | string | Stable public document reference used by the public API. |
-| `status` | string | Initial document status after ingestion. |
+| `status` | object | Initial domain status for the newly accepted document. |
+| `status.intake.status` | string or null | Initial intake state. |
+| `status.accounting.status` | string or null | Initial accounting state. |
+| `status.accounting.review_reason` | string or null | Review reason when accounting is pending review. |
 
 ## GET /api/v1/documents
 
@@ -99,7 +110,8 @@ Query parameters:
 | --- | --- | --- | --- |
 | `limit` | integer | `50` | Page size. Clamped to `1..200`. |
 | `offset` | integer | `0` | Zero-based row offset. Negative values are treated as `0`. |
-| `status` | string | none | Exact document status filter. |
+| `intake_status` | string | none | Optional exact intake-state filter. |
+| `accounting_status` | string | none | Optional exact accounting-state filter. |
 | `month` | string | none | Received month filter in `YYYY-MM` format. |
 | `search` | string | none | Case-insensitive search over `short_ref` and supplier name. |
 
@@ -110,7 +122,15 @@ Response DTO:
   "items": [
     {
       "short_ref": "D000123",
-      "status": "VALIDATED",
+      "status": {
+        "intake": {
+          "status": "INGESTED"
+        },
+        "accounting": {
+          "status": "READY_FOR_EXPORT",
+          "review_reason": null
+        }
+      },
       "supplier_name": "Example AB",
       "transaction_date": "2026-05-25",
       "total_amount": "1250.00",
@@ -132,7 +152,10 @@ Response DTO:
 | Field | Type | Description |
 | --- | --- | --- |
 | `short_ref` | string | Stable public document reference. |
-| `status` | string | Current document pipeline status. |
+| `status` | object | Domain-native status summary for the document. |
+| `status.intake.status` | string or null | Current intake state. |
+| `status.accounting.status` | string or null | Current accounting state. |
+| `status.accounting.review_reason` | string or null | Review reason when accounting is pending review. |
 | `supplier_name` | string or null | Latest extracted supplier name. |
 | `transaction_date` | string or null | Latest extracted transaction date. |
 | `total_amount` | string or null | Latest extracted total amount. Amounts are serialized as strings to preserve decimal precision. |
@@ -152,17 +175,25 @@ Pagination fields:
 
 ## GET /api/v1/documents/status
 
-Returns document counts grouped by processing status category.
+Returns document counts grouped by domain.
 
 Response DTO:
 
 ```json
 {
-  "processing": 3,
-  "pending_review": 1,
-  "export_ready": 2,
-  "exported": 10,
-  "failed": 0
+  "documents_total": 42,
+  "intake": {
+    "processing": 3,
+    "ingested": 40,
+    "failed": 1
+  },
+  "accounting": {
+    "processing": 2,
+    "pending_review": 5,
+    "ready_for_export": 7,
+    "exported": 20,
+    "failed": 1
+  }
 }
 ```
 
@@ -170,11 +201,17 @@ Fields:
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `processing` | integer | Documents currently in the processing pipeline. |
-| `pending_review` | integer | Documents waiting for human review. |
-| `export_ready` | integer | Documents ready for export. |
-| `exported` | integer | Documents already exported. |
-| `failed` | integer | Documents in failed state. |
+| `documents_total` | integer | Total documents currently stored in the workspace. |
+| `intake` | object | Intake/ingestion counts. |
+| `intake.processing` | integer | Documents still in intake processing. |
+| `intake.ingested` | integer | All successfully ingested documents, including documents that may already have progressed into accounting. |
+| `intake.failed` | integer | Documents failed during intake. |
+| `accounting` | object | Accounting/review/export counts. |
+| `accounting.processing` | integer | Documents currently requested for or processing through accounting. |
+| `accounting.pending_review` | integer | Documents waiting for human review. |
+| `accounting.ready_for_export` | integer | Documents ready for export. |
+| `accounting.exported` | integer | Documents already exported. |
+| `accounting.failed` | integer | Documents failed in accounting or export. |
 
 ## GET /api/v1/documents/{short_ref}
 
@@ -185,7 +222,25 @@ Response DTO:
 ```json
 {
   "short_ref": "D000123",
-  "status": "VALIDATED",
+  "status": {
+    "intake": {
+      "status": "INGESTED",
+      "started_at": "2026-05-25T10:00:00Z",
+      "completed_at": "2026-05-25T10:00:08Z",
+      "failure_reason": null
+    },
+    "accounting": {
+      "status": "READY_FOR_EXPORT",
+      "requested_at": "2026-05-25T10:01:00Z",
+      "started_at": "2026-05-25T10:01:01Z",
+      "completed_at": "2026-05-25T10:01:15Z",
+      "failure_reason": null,
+      "review_reason": null,
+      "export_batch_id": null,
+      "latest_run_kind": "EXPORT",
+      "latest_run_status": "COMPLETED"
+    }
+  },
   "filename": "invoice.pdf",
   "mime_type": "application/pdf",
   "supplier_name": "Example AB",
@@ -222,7 +277,9 @@ Fields:
 | Field | Type | Description |
 | --- | --- | --- |
 | `short_ref` | string | Stable public document reference. |
-| `status` | string | Current document pipeline status. |
+| `status` | object or null | Domain-native document status detail, including intake and accounting state. |
+| `status.intake` | object or null | Intake status detail. |
+| `status.accounting` | object or null | Accounting status detail. |
 | `filename` | string or null | Stored/display file name. |
 | `mime_type` | string or null | Stored MIME type for the source artifact. |
 | `supplier_name` | string or null | Latest extracted supplier name. |
@@ -263,7 +320,7 @@ Response DTO:
 ```json
 {
   "short_ref": "D000123",
-  "explanation": "D000123 is currently EXPORT_READY.\nReason: this document is healthy and ready for export.\nReview: AUTO_APPROVED\nConfidence: 91%"
+  "explanation": "D000123 is currently ready for export.\nReason: this document is healthy and ready for export.\nReview: AUTO_APPROVED\nConfidence: 91%"
 }
 ```
 

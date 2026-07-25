@@ -17,8 +17,8 @@ pub enum InterventionAudience {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InterventionKind {
-    SenderProgress,
     SenderClarification,
+    SenderDuplicate,
     AccountingReview,
     AccountingNotification,
     AuditOnly,
@@ -49,7 +49,13 @@ pub struct DocumentEventCandidate {
     pub event_id: i64,
     pub document_id: i64,
     pub short_ref: String,
-    pub status: String,
+    pub intake_status: Option<String>,
+    pub accounting_status: Option<String>,
+    pub accounting_requested_at: Option<String>,
+    pub accounting_review_reason: Option<String>,
+    pub accounting_export_batch_id: Option<i64>,
+    pub latest_accounting_run_kind: Option<String>,
+    pub latest_accounting_run_status: Option<String>,
     pub event_type: String,
     pub payload: Option<Value>,
     pub created_at: DateTime<Utc>,
@@ -68,6 +74,41 @@ struct AccountingTarget {
     channel_type: String,
     channel_identifier: String,
     metadata: Option<Value>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct DocumentEventCandidateRow {
+    event_id: i64,
+    document_id: i64,
+    short_ref: String,
+    intake_status: Option<String>,
+    accounting_status: Option<String>,
+    accounting_requested_at: Option<String>,
+    accounting_review_reason: Option<String>,
+    accounting_export_batch_id: Option<i64>,
+    latest_accounting_run_kind: Option<String>,
+    latest_accounting_run_status: Option<String>,
+    event_type: String,
+    payload: Option<Value>,
+    created_at: DateTime<Utc>,
+}
+
+fn candidate_from_row(row: DocumentEventCandidateRow) -> DocumentEventCandidate {
+    DocumentEventCandidate {
+        event_id: row.event_id,
+        document_id: row.document_id,
+        short_ref: row.short_ref,
+        intake_status: row.intake_status,
+        accounting_status: row.accounting_status,
+        accounting_requested_at: row.accounting_requested_at,
+        accounting_review_reason: row.accounting_review_reason,
+        accounting_export_batch_id: row.accounting_export_batch_id,
+        latest_accounting_run_kind: row.latest_accounting_run_kind,
+        latest_accounting_run_status: row.latest_accounting_run_status,
+        event_type: row.event_type,
+        payload: row.payload,
+        created_at: row.created_at,
+    }
 }
 
 pub async fn pending_document_interventions(
@@ -94,18 +135,38 @@ pub async fn document_intervention_candidate_by_event_id(
     pool: &DbPool,
     event_id: i64,
 ) -> anyhow::Result<Option<DocumentEventCandidate>> {
-    let row = sqlx::query_as(
+    let row = sqlx::query_as::<_, DocumentEventCandidateRow>(
         r#"
         SELECT
             e.id AS event_id,
             e.document_id,
             d.short_ref,
-            d.status,
+            dis.status AS intake_status,
+            das.status AS accounting_status,
+            das.requested_at AS accounting_requested_at,
+            das.review_reason AS accounting_review_reason,
+            das.export_batch_id AS accounting_export_batch_id,
+            (
+                SELECT dar.run_kind
+                FROM document_accounting_runs dar
+                WHERE dar.document_id = d.id
+                ORDER BY dar.created_at DESC, dar.id DESC
+                LIMIT 1
+            ) AS latest_accounting_run_kind,
+            (
+                SELECT dar.run_status
+                FROM document_accounting_runs dar
+                WHERE dar.document_id = d.id
+                ORDER BY dar.created_at DESC, dar.id DESC
+                LIMIT 1
+            ) AS latest_accounting_run_status,
             e.event_type,
             e.payload,
             e.created_at
         FROM document_events e
         JOIN documents d ON d.id = e.document_id
+        LEFT JOIN document_intake_state dis ON dis.document_id = d.id
+        LEFT JOIN document_accounting_state das ON das.document_id = d.id
         WHERE e.id = $1
         "#,
     )
@@ -113,7 +174,7 @@ pub async fn document_intervention_candidate_by_event_id(
     .fetch_optional(pool)
     .await?;
 
-    Ok(row)
+    Ok(row.map(candidate_from_row))
 }
 
 async fn pending_document_event_candidates(
@@ -121,21 +182,42 @@ async fn pending_document_event_candidates(
     since: DateTime<Utc>,
     limit: i64,
 ) -> anyhow::Result<Vec<DocumentEventCandidate>> {
-    let rows = sqlx::query_as(
+    let rows = sqlx::query_as::<_, DocumentEventCandidateRow>(
         r#"
         SELECT
             e.id AS event_id,
             e.document_id,
             d.short_ref,
-            d.status,
+            dis.status AS intake_status,
+            das.status AS accounting_status,
+            das.requested_at AS accounting_requested_at,
+            das.review_reason AS accounting_review_reason,
+            das.export_batch_id AS accounting_export_batch_id,
+            (
+                SELECT dar.run_kind
+                FROM document_accounting_runs dar
+                WHERE dar.document_id = d.id
+                ORDER BY dar.created_at DESC, dar.id DESC
+                LIMIT 1
+            ) AS latest_accounting_run_kind,
+            (
+                SELECT dar.run_status
+                FROM document_accounting_runs dar
+                WHERE dar.document_id = d.id
+                ORDER BY dar.created_at DESC, dar.id DESC
+                LIMIT 1
+            ) AS latest_accounting_run_status,
             e.event_type,
             e.payload,
             e.created_at
         FROM document_events e
         JOIN documents d ON d.id = e.document_id
+        LEFT JOIN document_intake_state dis ON dis.document_id = d.id
+        LEFT JOIN document_accounting_state das ON das.document_id = d.id
         WHERE e.created_at >= $1
           AND e.event_type IN (
             'VISION_COMPLETED',
+            'DUPLICATE_DETECTED',
             'REVIEW_HUMAN_REQUESTED',
             'DOCUMENT_FAILED',
             'REVIEW_QUARANTINED',
@@ -152,7 +234,7 @@ async fn pending_document_event_candidates(
     .fetch_all(pool)
     .await?;
 
-    Ok(rows)
+    Ok(rows.into_iter().map(candidate_from_row).collect())
 }
 
 pub async fn build_document_intervention(
@@ -209,9 +291,9 @@ fn classify_document_event(
     }
 
     match event_type {
-        "VISION_COMPLETED" => Some((
+        "DUPLICATE_DETECTED" => Some((
             InterventionAudience::Sender,
-            InterventionKind::SenderProgress,
+            InterventionKind::SenderDuplicate,
         )),
         "REVIEW_HUMAN_REQUESTED" | "REVIEW_QUARANTINED" => Some((
             InterventionAudience::Accounting,
@@ -222,16 +304,17 @@ fn classify_document_event(
             InterventionKind::AccountingNotification,
         )),
         "REVIEW_AUTO_APPROVED" => None,
-        "STATUS_CHANGED"
-            if payload.get("status").and_then(Value::as_str) == Some("EXPORT_READY") =>
-        {
-            Some((
-                InterventionAudience::Accounting,
-                InterventionKind::AccountingNotification,
-            ))
-        }
+        "STATUS_CHANGED" if status_changed_marks_export_ready(payload) => Some((
+            InterventionAudience::Accounting,
+            InterventionKind::AccountingNotification,
+        )),
         _ => None,
     }
+}
+
+fn status_changed_marks_export_ready(payload: &Value) -> bool {
+    payload.get("accounting_status").and_then(Value::as_str) == Some("READY_FOR_EXPORT")
+        || payload.get("export_status").and_then(Value::as_str) == Some("READY")
 }
 
 async fn build_intervention_response(
@@ -241,7 +324,6 @@ async fn build_intervention_response(
     kind: InterventionKind,
 ) -> anyhow::Result<GatewayMessageResponse> {
     match kind {
-        InterventionKind::SenderProgress => sender_progress_response(pool, event).await,
         InterventionKind::SenderClarification => Ok(GatewayMessageResponse {
             message: payload
                 .get("question")
@@ -257,6 +339,7 @@ async fn build_intervention_response(
             attachments: Vec::new(),
             buttons: None,
         }),
+        InterventionKind::SenderDuplicate => Ok(sender_duplicate_response(event)),
         InterventionKind::AccountingReview => reopen_review_actions(pool, &event.short_ref).await,
         InterventionKind::AccountingNotification => {
             Ok(accounting_notification_response(event, payload))
@@ -265,25 +348,16 @@ async fn build_intervention_response(
     }
 }
 
-async fn sender_progress_response(
-    pool: &DbPool,
-    event: &DocumentEventCandidate,
-) -> anyhow::Result<GatewayMessageResponse> {
-    let details = document_brief_details(pool, event.document_id).await?;
-    let mut message = format!("Recorded {}.", event.short_ref);
-
-    if let Some(summary) = details {
-        message = format!("Recorded {}. {}", event.short_ref, summary);
-    }
-
-    message.push_str(" Forwarding to accounting.");
-
-    Ok(GatewayMessageResponse {
-        message,
+fn sender_duplicate_response(event: &DocumentEventCandidate) -> GatewayMessageResponse {
+    GatewayMessageResponse {
+        message: format!(
+            "This document is already processed and won't be processed again. Existing ref: {}.",
+            event.short_ref
+        ),
         format: GatewayMessageFormat::PlainText,
         attachments: Vec::new(),
         buttons: None,
-    })
+    }
 }
 
 fn accounting_notification_response(
@@ -297,12 +371,12 @@ fn accounting_notification_response(
                 .and_then(Value::as_str)
                 .unwrap_or("processing");
             format!(
-                "{} failed during {}. Use /why {} for details or /retry {} to reprocess it.",
+                "{} failed during {}. Ask why {} is blocked for details or ask me to retry {} to reprocess it.",
                 event.short_ref, stage, event.short_ref, event.short_ref
             )
         }
         "STATUS_CHANGED" => format!(
-            "{} is ready for accounting export. Use /export {} to export it, or /ready to see all ready documents.",
+            "{} is ready for accounting export. Ask me to export {} or ask for documents ready for export.",
             event.short_ref, event.short_ref
         ),
         _ => format!("{} needs accounting attention.", event.short_ref),
@@ -313,50 +387,6 @@ fn accounting_notification_response(
         format: GatewayMessageFormat::Markdown,
         attachments: Vec::new(),
         buttons: None,
-    }
-}
-
-async fn document_brief_details(pool: &DbPool, document_id: i64) -> anyhow::Result<Option<String>> {
-    let supplier: Option<String> = sqlx::query_scalar(
-        r#"
-        SELECT COALESCE(parsed_value, raw_value)
-        FROM extracted_fields
-        WHERE document_id = $1
-          AND field_type IN ('supplier_name', 'supplier', 'merchant_name')
-        ORDER BY created_at DESC
-        LIMIT 1
-        "#,
-    )
-    .bind(document_id)
-    .fetch_optional(pool)
-    .await?;
-
-    let amount: Option<String> = sqlx::query_scalar(
-        r#"
-        SELECT COALESCE(parsed_value, raw_value)
-        FROM extracted_fields
-        WHERE document_id = $1
-          AND field_type IN ('total_amount', 'amount', 'gross_amount')
-        ORDER BY created_at DESC
-        LIMIT 1
-        "#,
-    )
-    .bind(document_id)
-    .fetch_optional(pool)
-    .await?;
-
-    let mut parts = Vec::new();
-    if let Some(supplier) = supplier.filter(|value| !value.trim().is_empty()) {
-        parts.push(supplier);
-    }
-    if let Some(amount) = amount.filter(|value| !value.trim().is_empty()) {
-        parts.push(amount);
-    }
-
-    if parts.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(parts.join(", ")))
     }
 }
 
@@ -465,17 +495,144 @@ pub async fn release_intervention_delivery_claim(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::SqlitePool;
+
+    use crate::db::run_migrations;
 
     #[test]
-    fn classifies_sender_progress_from_vision_completion() {
-        let classified = classify_document_event("VISION_COMPLETED", &json!({}));
+    fn vision_completed_is_not_a_sender_intervention() {
         assert_eq!(
-            classified,
-            Some((
-                InterventionAudience::Sender,
-                InterventionKind::SenderProgress
-            ))
+            classify_document_event("VISION_COMPLETED", &json!({})),
+            None
         );
+    }
+
+    #[tokio::test]
+    async fn duplicate_detected_builds_sender_duplicate_message() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect sqlite");
+        run_migrations(&pool).await.expect("run migrations");
+
+        let (document_id, short_ref): (i64, String) = sqlx::query_as(
+            r#"
+            INSERT INTO documents (filename, file_hash, original_path, mime_type)
+            VALUES ('receipt.jpg', 'hash-1', '/tmp/receipt.jpg', 'image/jpeg')
+            RETURNING id, short_ref
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("insert document");
+        crate::document_state::seed_document_state_preset(
+            &pool,
+            document_id,
+            crate::document_state::TestDocumentStatePreset::IntakeIngested,
+        )
+        .await
+        .expect("seed document state");
+
+        let event = DocumentEventCandidate {
+            event_id: 1,
+            document_id,
+            short_ref: short_ref.clone(),
+            intake_status: Some("INGESTED".to_string()),
+            accounting_status: Some("NOT_REQUESTED".to_string()),
+            accounting_requested_at: None,
+            accounting_review_reason: None,
+            accounting_export_batch_id: None,
+            latest_accounting_run_kind: None,
+            latest_accounting_run_status: None,
+            event_type: "DUPLICATE_DETECTED".to_string(),
+            payload: None,
+            created_at: Utc::now(),
+        };
+
+        let response = build_intervention_response(
+            &pool,
+            &event,
+            &json!({}),
+            InterventionKind::SenderDuplicate,
+        )
+        .await
+        .expect("build sender duplicate response");
+
+        assert_eq!(
+            response.message,
+            format!(
+                "This document is already processed and won't be processed again. Existing ref: {}.",
+                short_ref
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn duplicate_detected_is_pending_sender_intervention() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect sqlite");
+        run_migrations(&pool).await.expect("run migrations");
+
+        let document_id = sqlx::query_scalar::<_, i64>(
+            r#"
+            INSERT INTO documents (filename, file_hash, original_path, mime_type)
+            VALUES ('receipt.jpg', 'hash-2', '/tmp/receipt.jpg', 'image/jpeg')
+            RETURNING id
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("insert document");
+        crate::document_state::seed_document_state_preset(
+            &pool,
+            document_id,
+            crate::document_state::TestDocumentStatePreset::IntakeIngested,
+        )
+        .await
+        .expect("seed document state");
+
+        sqlx::query(
+            r#"
+            INSERT INTO document_artifacts (
+                document_id,
+                channel_type,
+                channel_identifier,
+                profile_identifier,
+                source_timestamp,
+                original_filename,
+                metadata
+            )
+            VALUES ($1, 'TELEGRAM', '12345', '12345', NULL, 'receipt.jpg', '{}')
+            "#,
+        )
+        .bind(document_id)
+        .execute(&pool)
+        .await
+        .expect("insert artifact");
+
+        let event_id = sqlx::query_scalar::<_, i64>(
+            r#"
+            INSERT INTO document_events (document_id, event_type, payload)
+            VALUES ($1, 'DUPLICATE_DETECTED', '{"short_ref":"D000001"}')
+            RETURNING id
+            "#,
+        )
+        .bind(document_id)
+        .fetch_one(&pool)
+        .await
+        .expect("insert event");
+
+        let candidate = document_intervention_candidate_by_event_id(&pool, event_id)
+            .await
+            .expect("fetch candidate")
+            .expect("candidate exists");
+        let intervention = build_document_intervention(&pool, candidate, None)
+            .await
+            .expect("build intervention")
+            .expect("intervention exists");
+
+        assert_eq!(intervention.kind, InterventionKind::SenderDuplicate);
+        assert_eq!(intervention.audience, InterventionAudience::Sender);
     }
 
     #[test]
@@ -518,6 +675,20 @@ mod tests {
         assert_eq!(
             classify_document_event("EXPORT_BATCH_CREATED", &json!({ "batch_id": "batch-1" })),
             None
+        );
+    }
+
+    #[test]
+    fn export_ready_status_changed_supports_new_payload_shape() {
+        assert_eq!(
+            classify_document_event(
+                "STATUS_CHANGED",
+                &json!({ "accounting_status": "READY_FOR_EXPORT" })
+            ),
+            Some((
+                InterventionAudience::Accounting,
+                InterventionKind::AccountingNotification
+            ))
         );
     }
 }

@@ -4,32 +4,22 @@ mod common;
 
 use std::sync::Arc;
 
-use finelor::agents::{AgentContext, DocumentStatus};
+use common::TestDocumentStatePreset as Preset;
+use finelor::agents::AgentContext;
 use finelor::orchestration::JobProcessor;
 use finelor::queue::{Job, JobType, QueueConsumer, QueueProducer};
 use finelor::web::events::AppEventBus;
 use serde_json::json;
-use sqlx::{Row, SqlitePool};
+use sqlx::SqlitePool;
 
 fn context(pool: SqlitePool) -> AgentContext {
     AgentContext::new(pool, common::test_config(), AppEventBus::new(16))
 }
 
-async fn create_document(pool: &SqlitePool, status: &str, original_path: Option<&str>) -> i64 {
-    let hash = format!("orchestration-flow-{}", uuid::Uuid::new_v4());
-    sqlx::query_scalar::<_, i64>(
-        r#"
-        INSERT INTO documents (filename, status, file_hash, original_path, mime_type)
-        VALUES ('flow.png', $1, $2, $3, 'image/png')
-        RETURNING id
-        "#,
-    )
-    .bind(status)
-    .bind(hash)
-    .bind(original_path.unwrap_or(""))
-    .fetch_one(pool)
-    .await
-    .expect("insert document")
+async fn create_document(pool: &SqlitePool, preset: Preset, original_path: Option<&str>) -> i64 {
+    common::create_document_with_state_preset(pool, preset, original_path, "image/png")
+        .await
+        .0
 }
 
 fn write_test_png() -> std::path::PathBuf {
@@ -87,7 +77,7 @@ async fn run_next_job(
 }
 
 #[tokio::test]
-async fn queued_pipeline_runs_vision_accountant_validator_and_review_boundaries() {
+async fn queued_pipeline_runs_vision_then_explicit_accounting_pipeline() {
     let pool = common::in_memory_pool().await;
     let queue = common::test_queue();
     let producer = QueueProducer::new(queue.clone());
@@ -98,7 +88,7 @@ async fn queued_pipeline_runs_vision_accountant_validator_and_review_boundaries(
     let image_path = write_test_png();
     let document_id = create_document(
         &pool,
-        DocumentStatus::ProcessingVision.as_str(),
+        Preset::IntakeProcessing,
         Some(&image_path.to_string_lossy()),
     )
     .await;
@@ -109,12 +99,18 @@ async fn queued_pipeline_runs_vision_accountant_validator_and_review_boundaries(
 
     let vision_job = run_next_job(&pool, &queue, &producer, fake.clone()).await;
     assert!(matches!(vision_job.job_type, JobType::Vision));
-    let status: String = sqlx::query_scalar("SELECT status FROM documents WHERE id = $1")
-        .bind(document_id)
-        .fetch_one(&pool)
+    let state = common::current_document_state(&pool, document_id).await;
+    assert_eq!(state.intake_status.as_deref(), Some("INGESTED"));
+    assert_eq!(state.accounting_status.as_deref(), Some("NOT_REQUESTED"));
+    assert!(consumer_queue_empty(&queue).await);
+
+    finelor::document_state::request_accounting(&pool, document_id)
         .await
-        .expect("vision status");
-    assert_eq!(status, DocumentStatus::VisionComplete.as_str());
+        .expect("mark accounting requested");
+    producer
+        .enqueue(&Job::new(JobType::Accountant, document_id, 0))
+        .await
+        .expect("enqueue accountant");
 
     let accountant_job = run_next_job(&pool, &queue, &producer, fake.clone()).await;
     assert!(matches!(accountant_job.job_type, JobType::Accountant));
@@ -138,15 +134,17 @@ async fn queued_pipeline_runs_vision_accountant_validator_and_review_boundaries(
 
     let review_job = run_next_job(&pool, &queue, &producer, fake.clone()).await;
     assert!(matches!(review_job.job_type, JobType::Review));
-    let final_status: String = sqlx::query_scalar("SELECT status FROM documents WHERE id = $1")
-        .bind(document_id)
-        .fetch_one(&pool)
-        .await
-        .expect("final status");
+    let final_state = common::current_document_state(&pool, document_id).await;
+    assert_eq!(final_state.intake_status.as_deref(), Some("INGESTED"));
     assert!(matches!(
-        final_status.as_str(),
-        "EXPORT_READY" | "PENDING_HUMAN_REVIEW"
+        final_state.accounting_status.as_deref(),
+        Some("PENDING_REVIEW" | "READY_FOR_EXPORT")
     ));
+}
+
+async fn consumer_queue_empty(queue: &Arc<finelor::queue::InMemoryJobQueue>) -> bool {
+    let consumer = QueueConsumer::new(queue.clone(), "empty-check");
+    consumer.poll(1).await.expect("poll empty").is_empty()
 }
 
 #[tokio::test]
@@ -161,7 +159,7 @@ async fn failed_queued_job_can_be_retried_and_then_processed() {
     let image_path = write_test_png();
     let document_id = create_document(
         &pool,
-        DocumentStatus::ProcessingVision.as_str(),
+        Preset::IntakeProcessing,
         Some(&image_path.to_string_lossy()),
     )
     .await;
@@ -203,11 +201,7 @@ async fn failed_queued_job_can_be_retried_and_then_processed() {
         .await
         .expect("ack retry");
 
-    let row = sqlx::query("SELECT status FROM documents WHERE id = $1")
-        .bind(document_id)
-        .fetch_one(&pool)
-        .await
-        .expect("document status");
-    let status: String = row.get("status");
-    assert_eq!(status, DocumentStatus::VisionComplete.as_str());
+    let state = common::current_document_state(&pool, document_id).await;
+    assert_eq!(state.intake_status.as_deref(), Some("INGESTED"));
+    assert_eq!(state.accounting_status.as_deref(), Some("NOT_REQUESTED"));
 }

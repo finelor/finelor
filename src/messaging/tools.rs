@@ -4,11 +4,14 @@ use crate::db::DbPool;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::document_state::fetch_document_state_by_short_ref;
 use crate::inference::{ToolCall, ToolDefinition as InferenceToolDefinition, ToolFunction};
 use crate::query::{
-    DocumentSummary, count_documents, count_documents_by_status,
-    count_documents_requiring_attention, document_status_counts, document_summary_by_short_ref,
-    list_documents_by_status, list_documents_requiring_attention, list_recent_documents,
+    DocumentSummary, count_accounting_eligible_documents, count_documents,
+    count_documents_by_accounting_status, count_documents_requiring_attention,
+    document_summary_by_short_ref, grouped_document_status_counts,
+    list_accounting_eligible_documents, list_documents_by_accounting_status,
+    list_documents_requiring_attention, list_recent_documents,
 };
 use crate::skills::SkillRegistry;
 
@@ -44,6 +47,15 @@ pub struct AppToolDefinition {
     pub input_schema: serde_json::Value,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ToolExecutionOutput {
+    // This is the post-execution payload that gets fed back into the model for
+    // read-only reasoning turns. `result_description` stays out of the lean
+    // pre-call tool catalog and only appears after the tool has actually run.
+    pub result: serde_json::Value,
+    pub result_description: Option<String>,
+}
+
 impl From<AppToolDefinition> for InferenceToolDefinition {
     fn from(definition: AppToolDefinition) -> Self {
         Self {
@@ -61,7 +73,7 @@ pub fn read_only_tool_catalog() -> Vec<AppToolDefinition> {
     vec![
         AppToolDefinition {
             name: "document_status_summary",
-            description: "Get exact company document counts by processing status. Use for count questions.",
+            description: "Get the current live company document totals and grouped status counts. `documents_total` is all documents in the system. `intake.ingested` is all successfully ingested documents, even if they have already moved into accounting. Accounting counts show the current downstream accounting states. Use this for status, live status, current status, or count questions, and do not answer those from memory when this tool is available.",
             input_schema: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
         },
         AppToolDefinition {
@@ -87,7 +99,7 @@ pub fn read_only_tool_catalog() -> Vec<AppToolDefinition> {
         },
         AppToolDefinition {
             name: "explain_document",
-            description: "Explain why one company document is blocked, pending, failed, or ready. Reuses the same logic as /why.",
+            description: "Explain why one company document is blocked, pending, failed, or ready.",
             input_schema: json!({
                 "type": "object",
                 "properties": { "document_short_ref": { "type": "string" } },
@@ -109,6 +121,17 @@ pub fn read_only_tool_catalog() -> Vec<AppToolDefinition> {
         AppToolDefinition {
             name: "list_export_ready",
             description: "List company documents ready for export, with exact total_count and compact returned items.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "limit": { "type": "integer", "minimum": 1, "maximum": MAX_LIST_LIMIT }
+                },
+                "additionalProperties": false
+            }),
+        },
+        AppToolDefinition {
+            name: "list_accounting_eligible_documents",
+            description: "List company documents that are ingested and can now be sent to accounting, with exact total_count and compact returned items.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -149,7 +172,7 @@ pub fn mutating_prepare_tool_catalog() -> Vec<AppToolDefinition> {
     vec![
         AppToolDefinition {
             name: "prepare_open_review",
-            description: "Prepare a confirmation prompt to open review actions for one document by document_short_ref. Use only when the user explicitly asks to review or open review for a document.",
+            description: "Prepare a confirmation prompt to open review actions for one document by document_short_ref. Use only when the user explicitly asks to review or open review for a document. This is the only valid way to create a review confirmation boundary; do not write your own confirmation prompt in prose.",
             input_schema: json!({
                 "type": "object",
                 "properties": { "document_short_ref": { "type": "string" } },
@@ -159,7 +182,7 @@ pub fn mutating_prepare_tool_catalog() -> Vec<AppToolDefinition> {
         },
         AppToolDefinition {
             name: "prepare_retry_document",
-            description: "Prepare a confirmation prompt to retry or reprocess one document by document_short_ref. Use only when the user explicitly asks to retry or reprocess.",
+            description: "Prepare a confirmation prompt to retry or reprocess one document by document_short_ref. Use only when the user explicitly asks to retry or reprocess. This is the only valid way to create a retry or reprocess confirmation boundary; do not write your own confirmation prompt in prose.",
             input_schema: json!({
                 "type": "object",
                 "properties": { "document_short_ref": { "type": "string" } },
@@ -169,7 +192,7 @@ pub fn mutating_prepare_tool_catalog() -> Vec<AppToolDefinition> {
         },
         AppToolDefinition {
             name: "prepare_export_documents",
-            description: "Prepare a confirmation prompt to export ready documents. Use only when the user explicitly asks to export documents.",
+            description: "Prepare a confirmation prompt to export ready documents. Use only when the user explicitly asks to export documents. This is the only valid way to create an export confirmation boundary; do not write your own confirmation prompt in prose.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -178,6 +201,19 @@ pub fn mutating_prepare_tool_catalog() -> Vec<AppToolDefinition> {
                     "date_to": { "type": "string" },
                     "document_types": { "type": "array", "items": { "type": "string" } },
                     "confidence_min": { "type": "number" }
+                },
+                "additionalProperties": false
+            }),
+        },
+        AppToolDefinition {
+            name: "prepare_process_accounting_documents",
+            description: "Prepare a confirmation prompt to start accounting processing for one, several, or all ingested documents. Use only when the user explicitly asks to process documents for accounting. This is the only valid way to create an accounting-processing confirmation boundary; do not write your own confirmation prompt in prose.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "document_short_ref": { "type": "string" },
+                    "document_short_refs": { "type": "array", "items": { "type": "string" } },
+                    "all_eligible": { "type": "boolean" }
                 },
                 "additionalProperties": false
             }),
@@ -196,7 +232,10 @@ pub fn agent_inference_tools() -> Vec<InferenceToolDefinition> {
 pub fn is_mutating_prepare_tool(name: &str) -> bool {
     matches!(
         name,
-        "prepare_open_review" | "prepare_retry_document" | "prepare_export_documents"
+        "prepare_open_review"
+            | "prepare_retry_document"
+            | "prepare_export_documents"
+            | "prepare_process_accounting_documents"
     )
 }
 
@@ -206,11 +245,17 @@ pub async fn execute_read_only_tool(
     tool_call: &ReadOnlyToolCall,
 ) -> serde_json::Value {
     match execute_read_only_tool_inner(pool, skills_registry, tool_call).await {
-        Ok(value) => json!({
-            "ok": true,
-            "tool": tool_call.name,
-            "result": value,
-        }),
+        Ok(output) => {
+            let mut envelope = json!({
+                "ok": true,
+                "tool": tool_call.name,
+                "result": output.result,
+            });
+            if let Some(result_description) = output.result_description {
+                envelope["result_description"] = json!(result_description);
+            }
+            envelope
+        }
         Err(err) => json!({
             "ok": false,
             "tool": tool_call.name,
@@ -223,43 +268,71 @@ async fn execute_read_only_tool_inner(
     pool: &DbPool,
     skills_registry: Option<&SkillRegistry>,
     tool_call: &ReadOnlyToolCall,
-) -> anyhow::Result<serde_json::Value> {
+) -> anyhow::Result<ToolExecutionOutput> {
     match tool_call.name.as_str() {
         "document_status_summary" => document_status_summary(pool).await,
         "list_documents" => {
             let limit = limit_arg(&tool_call.args);
             let total_count = count_documents(pool).await?;
             let documents = list_recent_documents(pool, limit).await?;
-            Ok(document_list_result(total_count, documents))
+            Ok(ToolExecutionOutput {
+                result: document_list_result(total_count, documents),
+                result_description: Some("The result contains a recent-document list response. total_count is the exact number of documents in this tool's current query scope. returned_count is the number of document rows included in this response. items contains only the returned document rows. For each item, document_short_ref is the stable user-facing document reference. status.intake.status is the current intake state for that document. status.accounting.status is the current accounting state for that document. status.accounting.review_reason is the current review reason when present. supplier_name, invoice_date, and total_amount are the visible document business fields currently available. If you answer from this result, state the total_count clearly and preserve document_short_ref values exactly when summarizing or listing rows.".to_string()),
+            })
         }
         "get_document" => {
             let short_ref = required_document_short_ref(&tool_call.args)?;
             let document = document_summary_by_short_ref(pool, &short_ref).await?;
-            Ok(json!({
-                "document_short_ref": short_ref,
-                "document": document.as_ref().map(document_summary_json),
-                "found": document.is_some(),
-            }))
+            let document_state = fetch_document_state_by_short_ref(pool, &short_ref).await?;
+            Ok(ToolExecutionOutput {
+                result: json!({
+                    "document_short_ref": short_ref,
+                    "document": document.as_ref().map(document_summary_json),
+                    "status": document_state.as_ref().map(document_state_json),
+                    "found": document.is_some(),
+                }),
+                result_description: Some("The result contains one document's current visible state and details. document_short_ref identifies the exact document. status.intake.status is the current intake state. status.accounting.status is the current accounting state. status.accounting.review_reason is the current review reason when present. supplier_name, invoice_date, and total_amount are the visible document business fields currently available. If you answer from this result, stay focused on this single document and mirror the returned status and document_short_ref closely.".to_string()),
+            })
         }
         "explain_document" => {
             let short_ref = required_document_short_ref(&tool_call.args)?;
             let explanation = describe_document_why(pool, &short_ref).await?;
-            Ok(json!({
-                "document_short_ref": short_ref,
-                "explanation": explanation,
-            }))
+            Ok(ToolExecutionOutput {
+                result: json!({
+                    "document_short_ref": short_ref,
+                    "explanation": explanation,
+                }),
+                result_description: Some("The result contains a document-specific explanation. document_short_ref identifies the document being explained. explanation is the current blocker, pending reason, failure reason, or readiness reason for that document. If you answer from this result, use the explanation directly and keep the answer focused on that one document.".to_string()),
+            })
         }
         "list_pending_reviews" => {
             let limit = limit_arg(&tool_call.args);
             let total_count = count_documents_requiring_attention(pool).await?;
             let documents = list_documents_requiring_attention(pool, limit).await?;
-            Ok(document_list_result(total_count, documents))
+            Ok(ToolExecutionOutput {
+                result: document_list_result(total_count, documents),
+                result_description: Some("The result contains the pending-review document subset. total_count is the exact number of documents currently in the pending-review subset for this query scope. returned_count is the number of returned rows in this response. items contains only the returned pending-review documents. For each item, document_short_ref is the stable user-facing document reference. status.intake.status is the current intake state. status.accounting.status is the current accounting state. status.accounting.review_reason is the current review reason when present. supplier_name, invoice_date, and total_amount are the visible document business fields currently available. If you answer from this result, state the total_count clearly and preserve document_short_ref values exactly when listing or summarizing the returned review candidates.".to_string()),
+            })
         }
         "list_export_ready" => {
             let limit = limit_arg(&tool_call.args);
-            let total_count = count_documents_by_status(pool, "EXPORT_READY").await?;
-            let documents = list_documents_by_status(pool, "EXPORT_READY", limit).await?;
-            Ok(document_list_result(total_count, documents))
+            let total_count =
+                count_documents_by_accounting_status(pool, "READY_FOR_EXPORT").await?;
+            let documents =
+                list_documents_by_accounting_status(pool, "READY_FOR_EXPORT", limit).await?;
+            Ok(ToolExecutionOutput {
+                result: document_list_result(total_count, documents),
+                result_description: Some("The result contains the ready-for-export document subset. total_count is the exact number of documents currently ready for export in this query scope. returned_count is the number of returned rows in this response. items contains only the returned ready-for-export documents. For each item, document_short_ref is the stable user-facing document reference. status.intake.status is the current intake state. status.accounting.status is the current accounting state. status.accounting.review_reason is the current review reason when present. supplier_name, invoice_date, and total_amount are the visible document business fields currently available. If you answer from this result, state the total_count clearly and preserve document_short_ref values exactly when listing or summarizing the returned export-ready documents.".to_string()),
+            })
+        }
+        "list_accounting_eligible_documents" => {
+            let limit = limit_arg(&tool_call.args);
+            let total_count = count_accounting_eligible_documents(pool).await?;
+            let documents = list_accounting_eligible_documents(pool, limit).await?;
+            Ok(ToolExecutionOutput {
+                result: document_list_result(total_count, documents),
+                result_description: Some("The result contains the accounting-eligible document subset. total_count is the exact number of documents currently eligible to be sent to accounting in this query scope. returned_count is the number of returned rows in this response. items contains only the returned eligible documents. For each item, document_short_ref is the stable user-facing document reference. status.intake.status is the current intake state. status.accounting.status is the current accounting state. status.accounting.review_reason is the current review reason when present. supplier_name, invoice_date, and total_amount are the visible document business fields currently available. If you answer from this result, make it explicit that these are eligible-for-accounting documents, state the total_count clearly, and preserve document_short_ref values exactly when listing or summarizing the returned items.".to_string()),
+            })
         }
         "skill_view" => {
             let name = required_skill_name(&tool_call.args)?;
@@ -275,15 +348,26 @@ async fn execute_read_only_tool_inner(
     }
 }
 
-async fn document_status_summary(pool: &DbPool) -> anyhow::Result<serde_json::Value> {
-    let counts = document_status_counts(pool).await?;
-    Ok(json!({
-        "processing": counts.processing_count,
-        "pending_review": counts.pending_count,
-        "export_ready": counts.ready_count,
-        "exported": counts.exported_count,
-        "failed": counts.failed_count,
-    }))
+async fn document_status_summary(pool: &DbPool) -> anyhow::Result<ToolExecutionOutput> {
+    let counts = grouped_document_status_counts(pool).await?;
+    Ok(ToolExecutionOutput {
+        result: json!({
+            "documents_total": counts.documents_total,
+            "intake": {
+                "processing": counts.intake_processing_count,
+                "ingested": counts.intake_ingested_count,
+                "failed": counts.intake_failed_count,
+            },
+            "accounting": {
+                "processing": counts.accounting_processing_count,
+                "pending_review": counts.accounting_pending_review_count,
+                "ready_for_export": counts.accounting_ready_for_export_count,
+                "exported": counts.accounting_exported_count,
+                "failed": counts.accounting_failed_count,
+            },
+        }),
+        result_description: Some("The result contains grouped live workspace document counts. documents_total is all documents currently in the system. intake.processing is documents still in intake processing. intake.ingested is all successfully ingested documents, including documents that may already have progressed into accounting. intake.failed is documents that failed during intake. accounting.processing is documents currently active in accounting work. accounting.pending_review is documents currently waiting for human review. accounting.ready_for_export is documents completed in accounting and ready to export. accounting.exported is documents already exported. accounting.failed is documents failed in the accounting domain. If you answer from this result, report every returned count explicitly and do not collapse intake.ingested into prose.".to_string()),
+    })
 }
 
 fn document_list_result(total_count: i64, documents: Vec<DocumentSummary>) -> serde_json::Value {
@@ -298,11 +382,42 @@ fn document_list_result(total_count: i64, documents: Vec<DocumentSummary>) -> se
 fn document_summary_json(document: &DocumentSummary) -> serde_json::Value {
     json!({
         "document_short_ref": document.short_ref,
-        "status": document.status,
+        "status": {
+            "intake": {
+                "status": document.intake_status,
+            },
+            "accounting": {
+                "status": document.accounting_status,
+                "review_reason": document.review_reason,
+            },
+        },
         "supplier_name": document.supplier_name,
         "invoice_date": document.invoice_date,
         "total_amount": document.total_amount,
-        "review_reason": document.review_reason,
+    })
+}
+
+fn document_state_json(
+    snapshot: &crate::document_state::DocumentStateSnapshot,
+) -> serde_json::Value {
+    json!({
+        "intake": {
+            "status": snapshot.intake_status,
+            "started_at": snapshot.intake_started_at,
+            "completed_at": snapshot.intake_completed_at,
+            "failure_reason": snapshot.intake_failure_reason,
+        },
+        "accounting": {
+            "status": snapshot.accounting_status,
+            "requested_at": snapshot.accounting_requested_at,
+            "started_at": snapshot.accounting_started_at,
+            "completed_at": snapshot.accounting_completed_at,
+            "failure_reason": snapshot.accounting_failure_reason,
+            "review_reason": snapshot.accounting_review_reason,
+            "export_batch_id": snapshot.accounting_export_batch_id,
+            "latest_run_kind": snapshot.latest_accounting_run_kind,
+            "latest_run_status": snapshot.latest_accounting_run_status,
+        },
     })
 }
 
@@ -358,7 +473,7 @@ async fn read_skill_view_with_registry(
     registry: &SkillRegistry,
     name: &str,
     path: Option<&str>,
-) -> anyhow::Result<serde_json::Value> {
+) -> anyhow::Result<ToolExecutionOutput> {
     tracing::debug!(
         requested_skill_name = name,
         requested_supporting_path = path,
@@ -404,13 +519,16 @@ async fn read_skill_view_with_registry(
             .collect::<Vec<_>>(),
         "Loaded skill manifest from registry"
     );
-    Ok(skill_view_result(&skill))
+    Ok(ToolExecutionOutput {
+        result: skill_view_result(&skill),
+        result_description: Some("The result contains one skill's main instructions and supporting-file manifest. id is the stable skill package identifier. name is the skill display name. description is the skill summary. category identifies the skill grouping when present. content is the main SKILL.md body. references lists available supporting reference files and templates lists available supporting template files; these arrays are manifests, not the full bodies of those files. If you answer from this result, treat content as the main skill instructions and do not imply that listed references or templates have already been loaded in full.".to_string()),
+    })
 }
 
 fn read_skill_supporting_file(
     skill: &crate::skills::types::Skill,
     requested_path: &str,
-) -> anyhow::Result<serde_json::Value> {
+) -> anyhow::Result<ToolExecutionOutput> {
     let normalized = normalize_skill_supporting_path(requested_path)?;
     let kind = normalized
         .components()
@@ -445,15 +563,18 @@ fn read_skill_supporting_file(
             content_length = reference.content.len(),
             "Resolved reference file request from skill registry"
         );
-        return Ok(json!({
-            "id": skill.id.0,
-            "skill_name": skill.metadata.name,
-            "requested_path": requested_path,
-            "resolved_path": normalized.to_string_lossy(),
-            "file_kind": "reference",
-            "name": reference.name,
-            "content": reference.content,
-        }));
+        return Ok(ToolExecutionOutput {
+            result: json!({
+                "id": skill.id.0,
+                "skill_name": skill.metadata.name,
+                "requested_path": requested_path,
+                "resolved_path": normalized.to_string_lossy(),
+                "file_kind": "reference",
+                "name": reference.name,
+                "content": reference.content,
+            }),
+            result_description: Some("The result contains one loaded supporting file for a skill. id identifies the parent skill package. skill_name is the skill display name. requested_path is the path requested by the assistant. resolved_path is the normalized supporting-file path that was actually loaded. file_kind identifies whether the file is a reference or a template. name is the supporting file name. content is the full body of that supporting file. If you answer from this result, treat content as the loaded file body and do not imply that other supporting files were also loaded.".to_string()),
+        });
     }
 
     if kind == "templates"
@@ -480,15 +601,18 @@ fn read_skill_supporting_file(
             content_length = template.content.len(),
             "Resolved template file request from skill registry"
         );
-        return Ok(json!({
-            "id": skill.id.0,
-            "skill_name": skill.metadata.name,
-            "requested_path": requested_path,
-            "resolved_path": normalized.to_string_lossy(),
-            "file_kind": "template",
-            "name": template.name,
-            "content": template.content,
-        }));
+        return Ok(ToolExecutionOutput {
+            result: json!({
+                "id": skill.id.0,
+                "skill_name": skill.metadata.name,
+                "requested_path": requested_path,
+                "resolved_path": normalized.to_string_lossy(),
+                "file_kind": "template",
+                "name": template.name,
+                "content": template.content,
+            }),
+            result_description: Some("The result contains one loaded supporting file for a skill. id identifies the parent skill package. skill_name is the skill display name. requested_path is the path requested by the assistant. resolved_path is the normalized supporting-file path that was actually loaded. file_kind identifies whether the file is a reference or a template. name is the supporting file name. content is the full body of that supporting file. If you answer from this result, treat content as the loaded file body and do not imply that other supporting files were also loaded.".to_string()),
+        });
     }
 
     Err(anyhow::anyhow!(
@@ -569,14 +693,17 @@ fn template_relative_path(
 
 async fn read_skill_list_with_registry(
     registry: &SkillRegistry,
-) -> anyhow::Result<serde_json::Value> {
+) -> anyhow::Result<ToolExecutionOutput> {
     let skills = registry.get_all_skills().await;
     tracing::info!(
         skill_count = skills.len(),
         skill_names = ?skills.iter().map(|skill| skill.name().to_string()).collect::<Vec<_>>(),
         "Loaded skill list from registry through skill_list"
     );
-    Ok(skill_list_result_from_arcs(&skills))
+    Ok(ToolExecutionOutput {
+        result: skill_list_result_from_arcs(&skills),
+        result_description: Some("The result contains the available skill catalog. items contains the loaded skills available to the assistant. For each item, name is the skill's display name, description explains the skill's intended domain or workflow, and category identifies the skill grouping when present. If you answer from this result, treat it as a catalog summary and do not describe it as the full instructions of a skill.".to_string()),
+    })
 }
 
 fn skill_view_result(skill: &crate::skills::types::Skill) -> serde_json::Value {
@@ -715,7 +842,15 @@ mod tests {
                 .iter()
                 .any(|tool| tool.function.name == "prepare_retry_document")
         );
+        assert!(
+            tools
+                .iter()
+                .any(|tool| tool.function.name == "prepare_process_accounting_documents")
+        );
         assert!(is_mutating_prepare_tool("prepare_export_documents"));
+        assert!(is_mutating_prepare_tool(
+            "prepare_process_accounting_documents"
+        ));
         assert!(!is_mutating_prepare_tool("list_documents"));
     }
 
@@ -746,17 +881,268 @@ mod tests {
             vec![DocumentSummary {
                 id: 1,
                 short_ref: "D000001".to_string(),
-                status: "PENDING_HUMAN_REVIEW".to_string(),
+                intake_status: Some("INGESTED".to_string()),
+                accounting_status: Some("PENDING_REVIEW".to_string()),
                 supplier_name: Some("Supplier AB".to_string()),
                 invoice_date: None,
                 total_amount: None,
                 confidence_score: None,
-                review_reason: None,
+                review_reason: Some("Awaiting human review".to_string()),
             }],
         );
 
         assert_eq!(value["total_count"], 100);
         assert_eq!(value["returned_count"], 1);
+    }
+
+    #[tokio::test]
+    async fn list_accounting_eligible_documents_returns_only_vision_complete_unrequested_items() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .in_memory(true)
+                    .foreign_keys(true),
+            )
+            .await
+            .expect("connect");
+        crate::db::run_migrations(&pool).await.expect("migrate");
+
+        for preset in [
+            crate::document_state::TestDocumentStatePreset::IntakeIngested,
+            crate::document_state::TestDocumentStatePreset::AccountingRequested,
+            crate::document_state::TestDocumentStatePreset::AccountingRunning,
+        ] {
+            let document_id: i64 = sqlx::query_scalar(
+                r#"
+                INSERT INTO documents (filename, file_hash, original_path, mime_type)
+                VALUES ('doc.pdf', $1, '/tmp/doc.pdf', 'application/pdf')
+                RETURNING id
+                "#,
+            )
+            .bind(format!("eligible-{}", uuid::Uuid::new_v4()))
+            .fetch_one(&pool)
+            .await
+            .expect("insert document");
+            crate::document_state::seed_document_state_preset(&pool, document_id, preset)
+                .await
+                .expect("seed document status");
+        }
+
+        let value = execute_read_only_tool(
+            &pool,
+            None,
+            &ReadOnlyToolCall {
+                name: "list_accounting_eligible_documents".to_string(),
+                args: json!({ "limit": 10 }),
+            },
+        )
+        .await;
+
+        assert_eq!(value["ok"], true);
+        assert!(
+            value["result_description"]
+                .as_str()
+                .expect("result_description")
+                .contains("document_short_ref")
+        );
+        assert_eq!(value["result"]["total_count"], 1);
+        assert_eq!(value["result"]["returned_count"], 1);
+        assert_eq!(
+            value["result"]["items"][0]["status"],
+            json!({
+                "intake": {
+                    "status": "INGESTED"
+                },
+                "accounting": {
+                    "status": "NOT_REQUESTED",
+                    "review_reason": null
+                }
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn document_status_summary_returns_grouped_domain_counts() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .in_memory(true)
+                    .foreign_keys(true),
+            )
+            .await
+            .expect("connect");
+        crate::db::run_migrations(&pool).await.expect("migrate");
+
+        for preset in [
+            crate::document_state::TestDocumentStatePreset::IntakeReceived,
+            crate::document_state::TestDocumentStatePreset::PendingReview,
+            crate::document_state::TestDocumentStatePreset::ReadyForExport,
+            crate::document_state::TestDocumentStatePreset::Exported,
+            crate::document_state::TestDocumentStatePreset::IntakeFailed,
+        ] {
+            let document_id: i64 = sqlx::query_scalar(
+                r#"
+                INSERT INTO documents (filename, file_hash, original_path, mime_type)
+                VALUES ('doc.pdf', $1, '/tmp/doc.pdf', 'application/pdf')
+                RETURNING id
+                "#,
+            )
+            .bind(format!("status-{}", uuid::Uuid::new_v4()))
+            .fetch_one(&pool)
+            .await
+            .expect("insert document");
+            crate::document_state::seed_document_state_preset(&pool, document_id, preset)
+                .await
+                .expect("seed document status");
+        }
+
+        let value = execute_read_only_tool(
+            &pool,
+            None,
+            &ReadOnlyToolCall {
+                name: "document_status_summary".to_string(),
+                args: json!({}),
+            },
+        )
+        .await;
+
+        assert_eq!(value["ok"], true);
+        let description = value["result_description"]
+            .as_str()
+            .expect("result_description");
+        assert!(description.contains("documents_total"));
+        assert!(description.contains("intake.ingested"));
+        assert!(description.contains("report every returned count explicitly"));
+        assert_eq!(value["result"]["documents_total"], 5);
+        assert_eq!(value["result"]["intake"]["processing"], 0);
+        assert_eq!(value["result"]["intake"]["ingested"], 3);
+        assert_eq!(value["result"]["intake"]["failed"], 1);
+        assert_eq!(value["result"]["accounting"]["processing"], 0);
+        assert_eq!(value["result"]["accounting"]["pending_review"], 1);
+        assert_eq!(value["result"]["accounting"]["ready_for_export"], 1);
+        assert_eq!(value["result"]["accounting"]["exported"], 1);
+        assert_eq!(value["result"]["accounting"]["failed"], 0);
+    }
+
+    #[tokio::test]
+    async fn document_status_summary_reports_intake_and_accounting_processing_separately() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .in_memory(true)
+                    .foreign_keys(true),
+            )
+            .await
+            .expect("connect");
+        crate::db::run_migrations(&pool).await.expect("migrate");
+
+        for preset in [
+            crate::document_state::TestDocumentStatePreset::IntakeReceived,
+            crate::document_state::TestDocumentStatePreset::AccountingRunning,
+        ] {
+            let document_id: i64 = sqlx::query_scalar(
+                r#"
+                INSERT INTO documents (filename, file_hash, original_path, mime_type)
+                VALUES ('doc.pdf', $1, '/tmp/doc.pdf', 'application/pdf')
+                RETURNING id
+                "#,
+            )
+            .bind(format!("fallback-{}", uuid::Uuid::new_v4()))
+            .fetch_one(&pool)
+            .await
+            .expect("insert document");
+            crate::document_state::seed_document_state_preset(&pool, document_id, preset)
+                .await
+                .expect("seed document status");
+        }
+
+        let value = execute_read_only_tool(
+            &pool,
+            None,
+            &ReadOnlyToolCall {
+                name: "document_status_summary".to_string(),
+                args: json!({}),
+            },
+        )
+        .await;
+
+        assert_eq!(value["ok"], true);
+        assert!(
+            value["result_description"]
+                .as_str()
+                .expect("result_description")
+                .contains("intake.ingested")
+        );
+        assert_eq!(value["result"]["documents_total"], 2);
+        assert_eq!(value["result"]["intake"]["processing"], 0);
+        assert_eq!(value["result"]["intake"]["ingested"], 1);
+        assert_eq!(value["result"]["accounting"]["processing"], 1);
+    }
+
+    #[tokio::test]
+    async fn document_status_summary_counts_all_ingested_documents_even_after_accounting_progress()
+    {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .in_memory(true)
+                    .foreign_keys(true),
+            )
+            .await
+            .expect("connect");
+        crate::db::run_migrations(&pool).await.expect("migrate");
+
+        for preset in [
+            crate::document_state::TestDocumentStatePreset::IntakeIngested,
+            crate::document_state::TestDocumentStatePreset::IntakeIngested,
+            crate::document_state::TestDocumentStatePreset::Exported,
+        ] {
+            let document_id: i64 = sqlx::query_scalar(
+                r#"
+                INSERT INTO documents (filename, file_hash, original_path, mime_type)
+                VALUES ('doc.pdf', $1, '/tmp/doc.pdf', 'application/pdf')
+                RETURNING id
+                "#,
+            )
+            .bind(format!("ingested-{}", uuid::Uuid::new_v4()))
+            .fetch_one(&pool)
+            .await
+            .expect("insert document");
+            crate::document_state::seed_document_state_preset(&pool, document_id, preset)
+                .await
+                .expect("seed document status");
+        }
+
+        let value = execute_read_only_tool(
+            &pool,
+            None,
+            &ReadOnlyToolCall {
+                name: "document_status_summary".to_string(),
+                args: json!({}),
+            },
+        )
+        .await;
+
+        assert_eq!(value["ok"], true);
+        assert!(
+            value["result_description"]
+                .as_str()
+                .expect("result_description")
+                .contains("documents currently in the system")
+        );
+        assert_eq!(value["result"]["documents_total"], 3);
+        assert_eq!(value["result"]["intake"]["processing"], 0);
+        assert_eq!(value["result"]["intake"]["ingested"], 3);
+        assert_eq!(value["result"]["intake"]["failed"], 0);
+        assert_eq!(value["result"]["accounting"]["processing"], 0);
+        assert_eq!(value["result"]["accounting"]["pending_review"], 0);
+        assert_eq!(value["result"]["accounting"]["ready_for_export"], 0);
+        assert_eq!(value["result"]["accounting"]["exported"], 1);
+        assert_eq!(value["result"]["accounting"]["failed"], 0);
     }
 
     #[test]
@@ -791,6 +1177,39 @@ mod tests {
             array
                 .to_string()
                 .contains("tool arguments must be an object")
+        );
+    }
+
+    #[tokio::test]
+    async fn read_only_tool_failure_omits_result_description() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .in_memory(true)
+                    .foreign_keys(true),
+            )
+            .await
+            .expect("connect");
+        crate::db::run_migrations(&pool).await.expect("migrate");
+
+        let value = execute_read_only_tool(
+            &pool,
+            None,
+            &ReadOnlyToolCall {
+                name: "unknown_tool".to_string(),
+                args: json!({}),
+            },
+        )
+        .await;
+
+        assert_eq!(value["ok"], false);
+        assert!(value.get("result_description").is_none());
+        assert!(
+            value["error"]
+                .as_str()
+                .unwrap()
+                .contains("unknown read-only tool")
         );
     }
 
@@ -853,9 +1272,17 @@ Useful overview.
             .await
             .expect("registry should initialize");
 
-        let value = read_skill_list_with_registry(&registry)
+        let output = read_skill_list_with_registry(&registry)
             .await
             .expect("skill list should load");
+        assert!(
+            output
+                .result_description
+                .as_deref()
+                .expect("result description")
+                .contains("available skill catalog")
+        );
+        let value = output.result;
 
         assert_eq!(value["total_count"], 2);
         assert_eq!(value["items"][0]["id"], "alpha-helper");
@@ -903,9 +1330,17 @@ Useful overview.
             .await
             .expect("registry should initialize");
 
-        let value = read_skill_view_with_registry(&registry, "Invoice Helper", None)
+        let output = read_skill_view_with_registry(&registry, "Invoice Helper", None)
             .await
             .expect("skill view should load");
+        assert!(
+            output
+                .result_description
+                .as_deref()
+                .expect("result description")
+                .contains("main instructions and supporting-file manifest")
+        );
+        let value = output.result;
 
         assert_eq!(value["id"], "invoice-helper");
         assert_eq!(value["name"], "Invoice Helper");
@@ -991,10 +1426,18 @@ Useful overview.
             .await
             .expect("registry should initialize");
 
-        let value =
+        let output =
             read_skill_view_with_registry(&registry, "Invoice Helper", Some("references/usage.md"))
                 .await
                 .expect("reference view should load");
+        assert!(
+            output
+                .result_description
+                .as_deref()
+                .expect("result description")
+                .contains("loaded supporting file")
+        );
+        let value = output.result;
 
         assert_eq!(value["file_kind"], "reference");
         assert_eq!(value["name"], "usage.md");
@@ -1032,13 +1475,21 @@ Useful overview.
             .await
             .expect("registry should initialize");
 
-        let value = read_skill_view_with_registry(
+        let output = read_skill_view_with_registry(
             &registry,
             "Invoice Helper",
             Some("templates/invoice.html"),
         )
         .await
         .expect("template view should load");
+        assert!(
+            output
+                .result_description
+                .as_deref()
+                .expect("result description")
+                .contains("loaded supporting file")
+        );
+        let value = output.result;
 
         assert_eq!(value["file_kind"], "template");
         assert_eq!(value["name"], "invoice.html");

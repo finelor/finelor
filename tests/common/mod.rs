@@ -8,6 +8,7 @@
 // directly for local fixtures and helper ergonomics.
 
 use async_trait::async_trait;
+use finelor::document_state::DocumentStateSnapshot;
 use finelor::error::{AppError, AppResult};
 use finelor::inference::{
     ChatJsonRequest, ImageJsonRequest, InferenceProvider, ModelChatResponse, ModelTextResponse,
@@ -25,6 +26,7 @@ use tower_sessions::{
     cookie::{Key, SameSite},
 };
 use tower_sessions_sqlx_store::SqliteStore;
+use uuid::Uuid;
 
 pub async fn in_memory_pool() -> sqlx::SqlitePool {
     let options = SqliteConnectOptions::new()
@@ -202,6 +204,231 @@ pub async fn drain_jobs(
         .poll("test-worker", batch_size)
         .await
         .expect("poll test queue")
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TestDocumentStatePreset {
+    IntakeReceived,
+    IntakeProcessing,
+    IntakeIngested,
+    IntakeFailed,
+    AccountingRequested,
+    AccountingRunning,
+    AccountingCompleted,
+    ValidationRunning,
+    ValidationCompleted,
+    PendingReview,
+    ReadyForExport,
+    Exporting,
+    Exported,
+    AccountingFailed,
+}
+
+async fn seed_document_state_preset(
+    pool: &sqlx::SqlitePool,
+    document_id: i64,
+    preset: TestDocumentStatePreset,
+) {
+    use finelor::document_state;
+
+    async fn seed_accountant_reviewed(pool: &sqlx::SqlitePool, document_id: i64) {
+        document_state::mark_intake_processing(pool, document_id)
+            .await
+            .expect("mark intake processing");
+        document_state::mark_intake_ingested(pool, document_id)
+            .await
+            .expect("mark intake ingested");
+        document_state::request_accounting(pool, document_id)
+            .await
+            .expect("request accounting");
+        document_state::start_accounting_with_metadata(pool, document_id, None, None, None)
+            .await
+            .expect("start accounting");
+        document_state::complete_accountant_review(pool, document_id)
+            .await
+            .expect("complete accountant review");
+    }
+
+    async fn seed_validated(pool: &sqlx::SqlitePool, document_id: i64) {
+        seed_accountant_reviewed(pool, document_id).await;
+        document_state::start_validation(pool, document_id)
+            .await
+            .expect("start validation");
+        document_state::complete_validation(pool, document_id)
+            .await
+            .expect("complete validation");
+    }
+
+    document_state::initialize_document_state(pool, document_id)
+        .await
+        .expect("initialize document state");
+    document_state::reset_document_state(pool, document_id)
+        .await
+        .expect("reset document state");
+
+    match preset {
+        TestDocumentStatePreset::IntakeReceived => {}
+        TestDocumentStatePreset::IntakeProcessing => {
+            document_state::mark_intake_processing(pool, document_id)
+                .await
+                .expect("mark intake processing");
+        }
+        TestDocumentStatePreset::IntakeIngested => {
+            document_state::mark_intake_processing(pool, document_id)
+                .await
+                .expect("mark intake processing");
+            document_state::mark_intake_ingested(pool, document_id)
+                .await
+                .expect("mark intake ingested");
+        }
+        TestDocumentStatePreset::IntakeFailed => {
+            document_state::mark_intake_processing(pool, document_id)
+                .await
+                .expect("mark intake processing");
+            document_state::mark_intake_failed(pool, document_id, Some("test_failed"))
+                .await
+                .expect("mark intake failed");
+        }
+        TestDocumentStatePreset::AccountingRequested => {
+            document_state::mark_intake_processing(pool, document_id)
+                .await
+                .expect("mark intake processing");
+            document_state::mark_intake_ingested(pool, document_id)
+                .await
+                .expect("mark intake ingested");
+            document_state::request_accounting(pool, document_id)
+                .await
+                .expect("request accounting");
+        }
+        TestDocumentStatePreset::AccountingRunning => {
+            document_state::mark_intake_processing(pool, document_id)
+                .await
+                .expect("mark intake processing");
+            document_state::mark_intake_ingested(pool, document_id)
+                .await
+                .expect("mark intake ingested");
+            document_state::request_accounting(pool, document_id)
+                .await
+                .expect("request accounting");
+            document_state::start_accounting_with_metadata(pool, document_id, None, None, None)
+                .await
+                .expect("start accounting");
+        }
+        TestDocumentStatePreset::AccountingCompleted => {
+            seed_accountant_reviewed(pool, document_id).await
+        }
+        TestDocumentStatePreset::ValidationRunning => {
+            seed_accountant_reviewed(pool, document_id).await;
+            document_state::start_validation(pool, document_id)
+                .await
+                .expect("start validation");
+        }
+        TestDocumentStatePreset::ValidationCompleted => seed_validated(pool, document_id).await,
+        TestDocumentStatePreset::PendingReview => {
+            seed_validated(pool, document_id).await;
+            document_state::request_human_review(pool, document_id, None)
+                .await
+                .expect("request human review");
+        }
+        TestDocumentStatePreset::ReadyForExport => {
+            seed_validated(pool, document_id).await;
+            document_state::complete_review(pool, document_id, None)
+                .await
+                .expect("complete review");
+            document_state::mark_export_ready(pool, document_id)
+                .await
+                .expect("mark export ready");
+        }
+        TestDocumentStatePreset::Exporting => {
+            seed_validated(pool, document_id).await;
+            document_state::complete_review(pool, document_id, None)
+                .await
+                .expect("complete review");
+            document_state::mark_export_ready(pool, document_id)
+                .await
+                .expect("mark export ready");
+            document_state::start_exporting(pool, document_id, None)
+                .await
+                .expect("start exporting");
+        }
+        TestDocumentStatePreset::Exported => {
+            seed_validated(pool, document_id).await;
+            document_state::complete_review(pool, document_id, None)
+                .await
+                .expect("complete review");
+            document_state::mark_export_ready(pool, document_id)
+                .await
+                .expect("mark export ready");
+            sqlx::query(
+                "INSERT OR IGNORE INTO users (id, role, email, password_hash) VALUES (1, 'admin', 'test@example.com', 'hash')",
+            )
+            .execute(pool)
+            .await
+            .expect("insert export user");
+            let export_batch_id: i64 = sqlx::query_scalar(
+                "INSERT INTO export_batches (user_id, document_count, filter_criteria) VALUES (1, 1, '{}') RETURNING id",
+            )
+            .fetch_one(pool)
+            .await
+            .expect("insert export batch");
+            document_state::mark_exported(pool, document_id, export_batch_id)
+                .await
+                .expect("mark exported");
+        }
+        TestDocumentStatePreset::AccountingFailed => {
+            document_state::mark_intake_processing(pool, document_id)
+                .await
+                .expect("mark intake processing");
+            document_state::mark_intake_ingested(pool, document_id)
+                .await
+                .expect("mark intake ingested");
+            document_state::request_accounting(pool, document_id)
+                .await
+                .expect("request accounting");
+            document_state::start_accounting_with_metadata(pool, document_id, None, None, None)
+                .await
+                .expect("start accounting");
+            document_state::mark_accounting_failed(pool, document_id, Some("test_failed"))
+                .await
+                .expect("mark accounting failed");
+        }
+    }
+}
+
+pub async fn create_document_with_state_preset(
+    pool: &sqlx::SqlitePool,
+    preset: TestDocumentStatePreset,
+    original_path: Option<&str>,
+    mime_type: &str,
+) -> (i64, String) {
+    let hash = format!("test-doc-{}", Uuid::new_v4());
+    let row: (i64, String) = sqlx::query_as(
+        r#"
+        INSERT INTO documents (filename, file_hash, original_path, mime_type)
+        VALUES ('test.pdf', $1, $2, $3)
+        RETURNING id, short_ref
+        "#,
+    )
+    .bind(hash)
+    .bind(original_path.unwrap_or(""))
+    .bind(mime_type)
+    .fetch_one(pool)
+    .await
+    .expect("insert test document");
+
+    seed_document_state_preset(pool, row.0, preset).await;
+
+    row
+}
+
+pub async fn current_document_state(
+    pool: &sqlx::SqlitePool,
+    document_id: i64,
+) -> DocumentStateSnapshot {
+    finelor::document_state::fetch_document_state(pool, document_id)
+        .await
+        .expect("fetch document state snapshot")
+        .expect("document state snapshot should exist")
 }
 
 #[derive(Clone, Default)]

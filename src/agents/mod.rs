@@ -2,10 +2,9 @@ use std::collections::HashMap;
 use std::fmt::Display;
 
 use crate::db::DbPool;
+use crate::web::events::{AppEvent, AppEventBus};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-
-use crate::web::events::{AppEvent, AppEventBus};
 
 pub mod accountant;
 pub mod export;
@@ -46,68 +45,6 @@ pub enum FieldLoadMode {
     EffectiveWithCorrections,
 }
 
-/// Document status in the processing pipeline
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DocumentStatus {
-    Received,
-    ProcessingVision,
-    VisionComplete,
-    ProcessingAccountant,
-    AccountantReviewed,
-    ProcessingValidator,
-    Validated,
-    PendingHumanReview,
-    ExportReady,
-    GeneratingSie4,
-    ReviewCompleted,
-    Exported,
-    Archived,
-    Failed,
-}
-
-impl DocumentStatus {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            DocumentStatus::Received => "RECEIVED",
-            DocumentStatus::ProcessingVision => "PROCESSING_VISION",
-            DocumentStatus::VisionComplete => "VISION_COMPLETE",
-            DocumentStatus::ProcessingAccountant => "PROCESSING_ACCOUNTANT",
-            DocumentStatus::AccountantReviewed => "ACCOUNTANT_REVIEWED",
-            DocumentStatus::ProcessingValidator => "PROCESSING_VALIDATOR",
-            DocumentStatus::Validated => "VALIDATED",
-            DocumentStatus::PendingHumanReview => "PENDING_HUMAN_REVIEW",
-            DocumentStatus::ExportReady => "EXPORT_READY",
-            DocumentStatus::GeneratingSie4 => "GENERATING_SIE4",
-            DocumentStatus::ReviewCompleted => "REVIEW_COMPLETED",
-            DocumentStatus::Exported => "EXPORTED",
-            DocumentStatus::Archived => "ARCHIVED",
-            DocumentStatus::Failed => "FAILED",
-        }
-    }
-}
-
-impl From<&str> for DocumentStatus {
-    fn from(s: &str) -> Self {
-        match s {
-            "RECEIVED" => DocumentStatus::Received,
-            "PROCESSING_VISION" => DocumentStatus::ProcessingVision,
-            "VISION_COMPLETE" => DocumentStatus::VisionComplete,
-            "PROCESSING_ACCOUNTANT" => DocumentStatus::ProcessingAccountant,
-            "ACCOUNTANT_REVIEWED" => DocumentStatus::AccountantReviewed,
-            "PROCESSING_VALIDATOR" => DocumentStatus::ProcessingValidator,
-            "VALIDATED" => DocumentStatus::Validated,
-            "PENDING_HUMAN_REVIEW" => DocumentStatus::PendingHumanReview,
-            "EXPORT_READY" => DocumentStatus::ExportReady,
-            "GENERATING_SIE4" => DocumentStatus::GeneratingSie4,
-            "REVIEW_COMPLETED" => DocumentStatus::ReviewCompleted,
-            "EXPORTED" => DocumentStatus::Exported,
-            "ARCHIVED" => DocumentStatus::Archived,
-            "FAILED" => DocumentStatus::Failed,
-            _ => DocumentStatus::Received,
-        }
-    }
-}
-
 /// Context passed to agents containing shared resources
 #[derive(Clone)]
 pub struct AgentContext {
@@ -124,40 +61,6 @@ impl AgentContext {
             events,
         }
     }
-
-    pub async fn update_document_status(
-        &self,
-        document_id: i64,
-        status: DocumentStatus,
-    ) -> crate::error::AppResult<()> {
-        sqlx::query(
-            r#"
-            UPDATE documents
-            SET status = $1, updated_at = CURRENT_TIMESTAMP
-            WHERE id = $2
-            "#,
-        )
-        .bind(status.as_str())
-        .bind(document_id)
-        .execute(&self.pool)
-        .await?;
-
-        tracing::info!(
-            document_id = %document_id,
-            status = %status.as_str(),
-            "Document status updated"
-        );
-
-        self.record_document_event(
-            document_id,
-            "STATUS_CHANGED",
-            json!({ "status": status.as_str() }),
-        )
-        .await?;
-
-        Ok(())
-    }
-
     pub async fn record_document_event(
         &self,
         document_id: i64,
@@ -263,41 +166,6 @@ pub mod db_helpers {
 
         Ok(resolve_extracted_field_rows(rows, mode))
     }
-
-    pub async fn update_document_status(
-        pool: &DbPool,
-        document_id: i64,
-        status: DocumentStatus,
-    ) -> crate::error::AppResult<()> {
-        sqlx::query(
-            r#"
-            UPDATE documents 
-            SET status = $1, updated_at = CURRENT_TIMESTAMP
-            WHERE id = $2
-            "#,
-        )
-        .bind(status.as_str())
-        .bind(document_id)
-        .execute(pool)
-        .await?;
-
-        tracing::info!(
-            document_id = %document_id,
-            status = %status.as_str(),
-            "Document status updated"
-        );
-
-        record_document_event(
-            pool,
-            document_id,
-            "STATUS_CHANGED",
-            serde_json::json!({ "status": status.as_str() }),
-        )
-        .await?;
-
-        Ok(())
-    }
-
     pub async fn record_document_event(
         pool: &DbPool,
         document_id: i64,
@@ -342,62 +210,9 @@ pub mod db_helpers {
         Ok(event_id)
     }
 
-    pub async fn update_vision_timestamps(
-        pool: &DbPool,
-        document_id: i64,
-        started: bool,
-        completed: bool,
-    ) -> crate::error::AppResult<()> {
-        if completed {
-            sqlx::query(
-                r#"
-                UPDATE documents 
-                SET vision_completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-                WHERE id = $1
-                "#,
-            )
-            .bind(document_id)
-            .execute(pool)
-            .await?;
-        }
-
-        if started {
-            sqlx::query(
-                r#"
-                UPDATE documents 
-                SET vision_started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-                WHERE id = $1
-                "#,
-            )
-            .bind(document_id)
-            .execute(pool)
-            .await?;
-        }
-
-        Ok(())
-    }
-
-    pub async fn update_accountant_timestamp(
-        pool: &DbPool,
-        document_id: i64,
-    ) -> crate::error::AppResult<()> {
-        sqlx::query(
-            r#"
-            UPDATE documents 
-            SET accountant_reviewed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-            WHERE id = $1
-            "#,
-        )
-        .bind(document_id)
-        .execute(pool)
-        .await?;
-
-        Ok(())
-    }
-
     #[cfg(test)]
     mod tests {
-        use super::*;
+        use super::{ExtractedFieldValue, FieldLoadMode, resolve_extracted_field_rows};
 
         fn field(
             field_type: &str,
@@ -451,48 +266,5 @@ pub mod db_helpers {
                 Some("0.00")
             );
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-
-    #[test]
-    fn document_status_roundtrip() {
-        use super::DocumentStatus;
-
-        let variants = vec![
-            DocumentStatus::Received,
-            DocumentStatus::ProcessingVision,
-            DocumentStatus::VisionComplete,
-            DocumentStatus::ProcessingAccountant,
-            DocumentStatus::AccountantReviewed,
-            DocumentStatus::ProcessingValidator,
-            DocumentStatus::Validated,
-            DocumentStatus::PendingHumanReview,
-            DocumentStatus::ExportReady,
-            DocumentStatus::GeneratingSie4,
-            DocumentStatus::ReviewCompleted,
-            DocumentStatus::Exported,
-            DocumentStatus::Archived,
-            DocumentStatus::Failed,
-        ];
-
-        for status in &variants {
-            let s = status.as_str();
-            let round = DocumentStatus::from(s);
-            assert_eq!(
-                *status, round,
-                "DocumentStatus {:?} -> {} -> {:?} did not roundtrip",
-                status, s, round
-            );
-        }
-    }
-
-    #[test]
-    fn document_status_from_unknown_defaults_to_received() {
-        use super::DocumentStatus;
-        let round = DocumentStatus::from("UNKNOWN_STATUS");
-        assert_eq!(round, DocumentStatus::Received);
     }
 }

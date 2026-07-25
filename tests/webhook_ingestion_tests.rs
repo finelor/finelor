@@ -61,16 +61,22 @@ async fn test_webhook_ingest_creates_document() {
     assert!(short_ref.starts_with('D'));
 
     // Verify DB record exists
-    let row: (String,) = sqlx::query_as("SELECT status FROM documents WHERE short_ref = $1")
+    let document_id: i64 = sqlx::query_scalar("SELECT id FROM documents WHERE short_ref = $1")
         .bind(short_ref)
         .fetch_one(&pool)
         .await
-        .expect("Document should exist in DB");
+        .expect("document id");
+    let status = finelor::document_state::fetch_document_state(&pool, document_id)
+        .await
+        .expect("document state snapshot")
+        .expect("document state")
+        .intake_status
+        .expect("intake status");
 
     assert!(
-        matches!(row.0.as_str(), "RECEIVED" | "PROCESSING_VISION"),
+        matches!(status.as_str(), "RECEIVED" | "PROCESSING"),
         "unexpected document status after ingest: {}",
-        row.0
+        status
     );
 
     // Cleanup
@@ -166,10 +172,11 @@ async fn ingest_handler(
     )
     .await
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let saved = result.document_ref();
 
     Ok(Json(serde_json::json!({
-        "document_id": result.id,
-        "short_ref": result.short_ref,
+        "document_id": saved.id,
+        "short_ref": saved.short_ref,
         "status": "RECEIVED",
     })))
 }
@@ -227,11 +234,17 @@ async fn test_webhook_ingest_persists_provenance_fields() {
     assert!(short_ref.starts_with('D'));
 
     // Verify DB records contain document state and artifact provenance
-    let status: String = sqlx::query_scalar("SELECT status FROM documents WHERE short_ref = $1")
+    let document_id: i64 = sqlx::query_scalar("SELECT id FROM documents WHERE short_ref = $1")
         .bind(short_ref)
         .fetch_one(&pool)
         .await
-        .expect("Document should exist in DB");
+        .expect("document id");
+    let status = finelor::document_state::fetch_document_state(&pool, document_id)
+        .await
+        .expect("document state snapshot")
+        .expect("document state")
+        .intake_status
+        .expect("intake status");
     let row: (Option<String>, Option<String>, Option<String>, String) = sqlx::query_as(
         r#"
         SELECT da.original_filename, da.source_timestamp, da.profile_identifier, da.channel_type
@@ -252,7 +265,7 @@ async fn test_webhook_ingest_persists_provenance_fields() {
     assert_eq!(row.2.as_deref(), Some("submitter-42"));
     assert_eq!(row.3, "API");
     assert!(
-        matches!(status.as_str(), "RECEIVED" | "PROCESSING_VISION"),
+        matches!(status.as_str(), "RECEIVED" | "PROCESSING"),
         "unexpected document status after ingest: {status}"
     );
 

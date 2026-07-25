@@ -11,13 +11,17 @@ use crate::agents::review::{HumanReviewKeyboard, ReviewField};
 use crate::agents::{HumanReviewCallbackResult, process_human_review_callback};
 use crate::config::AppConfig;
 use crate::inference::{OllamaProvider, ToolChatMessage};
-use crate::query::{document_ref_by_short_ref, workspace_identity};
+use crate::query::{
+    accounting_processing_candidates_by_ids, document_ref_by_short_ref, workspace_identity,
+};
 use crate::queue::QueueProducer;
 use crate::skills::SkillRegistry;
 use crate::web::events::AppEventBus;
 
 use super::commands::{
-    build_help_message, execute_gateway_intent, export_documents, reopen_review_actions,
+    AccountingProcessingSelection, build_help_message, describe_accounting_processing_execution,
+    describe_accounting_processing_preview, execute_accounting_processing_request,
+    export_documents, preview_accounting_processing_selection, reopen_review_actions,
     retry_document,
 };
 use super::confirmations::{
@@ -46,20 +50,18 @@ use super::tools::{
     is_mutating_prepare_tool, read_only_inference_tools,
 };
 
-enum AgentTurnDirective {
-    Freeform,
-    ForcedReadOnlyTool(ReadOnlyToolCall),
-}
-
 enum SlashRoute {
     Help,
-    ReadOnlyTool(ReadOnlyToolCall),
-    DeterministicAction,
 }
 
 struct AgentLoopResult {
     response: GatewayMessageResponse,
     metadata: AgentTurnMetadata,
+}
+
+struct PrepareToolExecution {
+    tool_result: serde_json::Value,
+    response: GatewayMessageResponse,
 }
 
 #[derive(Clone)]
@@ -144,36 +146,17 @@ impl AgentGatewayState {
         text: &str,
     ) -> anyhow::Result<GatewayMessageResponse> {
         if let Some(resolution) = parse_slash_intent(text) {
+            tracing::info!(
+                intent = resolution.intent.as_str(),
+                "Help slash command routed"
+            );
             return match slash_route(&resolution) {
                 SlashRoute::Help => Ok(GatewayMessageResponse::text(build_help_message())),
-                SlashRoute::ReadOnlyTool(tool_call) => {
-                    self.run_agent_chat(
-                        workspace_id,
-                        session_key,
-                        source,
-                        text,
-                        AgentTurnDirective::ForcedReadOnlyTool(tool_call),
-                    )
-                    .await
-                }
-                SlashRoute::DeterministicAction => {
-                    tracing::info!(
-                        intent = resolution.intent.as_str(),
-                        "Deterministic action command routed"
-                    );
-                    execute_gateway_intent(self, source, workspace_id, &resolution).await
-                }
             };
         }
 
-        self.run_agent_chat(
-            workspace_id,
-            session_key,
-            source,
-            text,
-            AgentTurnDirective::Freeform,
-        )
-        .await
+        self.run_agent_chat(workspace_id, session_key, source, text)
+            .await
     }
 
     async fn run_agent_chat(
@@ -182,7 +165,6 @@ impl AgentGatewayState {
         session_key: &str,
         source: &MessageSource,
         text: &str,
-        directive: AgentTurnDirective,
     ) -> anyhow::Result<GatewayMessageResponse> {
         tracing::info!(
             workspace_id = %workspace_id,
@@ -203,7 +185,7 @@ impl AgentGatewayState {
         };
         let (conversation_session, conversation_context) =
             self.load_short_term_memory(session_key, source).await;
-        let mut messages = assemble_chat_messages(PromptAssemblyInput {
+        let messages = assemble_chat_messages(PromptAssemblyInput {
             config: &self.config,
             workspace_id,
             session_key,
@@ -215,27 +197,8 @@ impl AgentGatewayState {
         })
         .await;
 
-        let allow_mutating_tools = matches!(directive, AgentTurnDirective::Freeform);
-        let mut metadata = AgentTurnMetadata::from_user_text(text);
-        if let AgentTurnDirective::ForcedReadOnlyTool(tool_call) = &directive {
-            let tool_result =
-                execute_read_only_tool(&self.pool, Some(&self.skills_registry), tool_call).await;
-            metadata.note_tool_call(&tool_call.name, &tool_call.args);
-            metadata.note_tool_result(&tool_call.name, &tool_result);
-            tracing::info!(
-                workspace_id = %workspace_id,
-                tool = tool_call.name,
-                ok = tool_result.get("ok").and_then(|value| value.as_bool()).unwrap_or(false),
-                "Forced read-only tool executed"
-            );
-            messages.push(crate::inference::ChatMessage {
-                role: "user".to_string(),
-                content: format!(
-                    "Forced read-only tool result for `{}`:\n{}\n\nUse this result to answer the user's slash command in concise plain text.",
-                    tool_call.name, tool_result
-                ),
-            });
-        }
+        let allow_mutating_tools = true;
+        let metadata = AgentTurnMetadata::from_user_text(text);
 
         let result = self
             .run_agent_tool_loop(
@@ -319,15 +282,23 @@ impl AgentGatewayState {
                             });
                         }
 
+                        // Prepare tools are a different class from read-only reasoning tools.
+                        // They resolve action scope, persist a confirmation boundary, and return
+                        // a deterministic confirmation response immediately instead of routing
+                        // their payload back through the model for another reasoning pass.
                         tracing::info!(
                             tool = tool_call.name,
                             iteration = tool_call_index,
                             "Mutating confirmation tool requested"
                         );
-                        let response = self
+                        let execution = self
                             .prepare_mutating_confirmation(workspace_id, source, &tool_call)
                             .await?;
-                        return Ok(AgentLoopResult { response, metadata });
+                        metadata.note_tool_result(&tool_call.name, &execution.tool_result);
+                        return Ok(AgentLoopResult {
+                            response: execution.response,
+                            metadata,
+                        });
                     }
 
                     tracing::info!(
@@ -393,16 +364,26 @@ impl AgentGatewayState {
         workspace_id: Uuid,
         source: &MessageSource,
         tool_call: &ReadOnlyToolCall,
-    ) -> anyhow::Result<GatewayMessageResponse> {
+    ) -> anyhow::Result<PrepareToolExecution> {
         match tool_call.name.as_str() {
             "prepare_open_review" => {
                 let short_ref = required_tool_document_short_ref(&tool_call.args)?;
                 let Some(document) = document_ref_by_short_ref(&self.pool, &short_ref).await?
                 else {
-                    return Ok(GatewayMessageResponse::text(format!(
-                        "Document {} was not found for this company.",
-                        short_ref
-                    )));
+                    return Ok(PrepareToolExecution {
+                        tool_result: json!({
+                            "ok": false,
+                            "tool": tool_call.name,
+                            "error": format!(
+                                "Document {} was not found for this company.",
+                                short_ref
+                            ),
+                        }),
+                        response: GatewayMessageResponse::text(format!(
+                            "Document {} was not found for this company.",
+                            short_ref
+                        )),
+                    });
                 };
                 let confirmation = self
                     .store_confirmation(
@@ -413,19 +394,41 @@ impl AgentGatewayState {
                         json!({ "document_short_ref": short_ref }),
                     )
                     .await?;
-                Ok(confirmation_response(
-                    confirmation.id,
-                    format!("Confirm opening review actions for {}?", document.short_ref),
-                ))
+                let confirmation_id = confirmation.id;
+                let message = format!("Confirm opening review actions for {}?", document.short_ref);
+                Ok(PrepareToolExecution {
+                    tool_result: json!({
+                        "ok": true,
+                        "tool": tool_call.name,
+                        "result": {
+                            "message": message,
+                            "confirmation_id": confirmation_id,
+                            "document_short_ref": document.short_ref,
+                            "document_id": document.id,
+                        },
+                        "result_description": "The result contains a prepared review action, not an executed action. ok indicates whether the preparation succeeded. message is the assistant-facing explanation of what was prepared or why it could not be prepared. If confirmation data is present, confirmation_id identifies the pending confirmation and any returned document reference or document identifiers identify the target document for that prepared review action. If you answer from this result, make it explicit that review has been prepared for confirmation and has not yet been executed.",
+                    }),
+                    response: confirmation_response(confirmation_id, message),
+                })
             }
             "prepare_retry_document" => {
                 let short_ref = required_tool_document_short_ref(&tool_call.args)?;
                 let Some(document) = document_ref_by_short_ref(&self.pool, &short_ref).await?
                 else {
-                    return Ok(GatewayMessageResponse::text(format!(
-                        "Document {} was not found for this company.",
-                        short_ref
-                    )));
+                    return Ok(PrepareToolExecution {
+                        tool_result: json!({
+                            "ok": false,
+                            "tool": tool_call.name,
+                            "error": format!(
+                                "Document {} was not found for this company.",
+                                short_ref
+                            ),
+                        }),
+                        response: GatewayMessageResponse::text(format!(
+                            "Document {} was not found for this company.",
+                            short_ref
+                        )),
+                    });
                 };
                 let confirmation = self
                     .store_confirmation(
@@ -436,13 +439,25 @@ impl AgentGatewayState {
                         json!({ "document_short_ref": short_ref }),
                     )
                     .await?;
-                Ok(confirmation_response(
-                    confirmation.id,
-                    format!(
-                        "Confirm retrying {} from the beginning? This will reprocess the document.",
-                        document.short_ref
-                    ),
-                ))
+                let confirmation_id = confirmation.id;
+                let message = format!(
+                    "Confirm retrying {} from the beginning? This will reprocess the document.",
+                    document.short_ref
+                );
+                Ok(PrepareToolExecution {
+                    tool_result: json!({
+                        "ok": true,
+                        "tool": tool_call.name,
+                        "result": {
+                            "message": message,
+                            "confirmation_id": confirmation_id,
+                            "document_short_ref": document.short_ref,
+                            "document_id": document.id,
+                        },
+                        "result_description": "The result contains a prepared retry or reprocess action, not an executed action. ok indicates whether the preparation succeeded. message is the assistant-facing explanation of what was prepared or why it could not be prepared. If confirmation data is present, confirmation_id identifies the pending confirmation and any returned document reference or document identifiers identify the target document for that prepared retry action. If you answer from this result, make it explicit that retry has been prepared for confirmation and has not yet been executed.",
+                    }),
+                    response: confirmation_response(confirmation_id, message),
+                })
             }
             "prepare_export_documents" => {
                 let payload = export_payload_from_tool_args(&tool_call.args)?;
@@ -451,10 +466,20 @@ impl AgentGatewayState {
                 {
                     let Some(document) = document_ref_by_short_ref(&self.pool, short_ref).await?
                     else {
-                        return Ok(GatewayMessageResponse::text(format!(
-                            "Document {} was not found for this company.",
-                            short_ref
-                        )));
+                        return Ok(PrepareToolExecution {
+                            tool_result: json!({
+                                "ok": false,
+                                "tool": tool_call.name,
+                                "error": format!(
+                                    "Document {} was not found for this company.",
+                                    short_ref
+                                ),
+                            }),
+                            response: GatewayMessageResponse::text(format!(
+                                "Document {} was not found for this company.",
+                                short_ref
+                            )),
+                        });
                     };
                     Some(document.id)
                 } else {
@@ -476,12 +501,124 @@ impl AgentGatewayState {
                 } else {
                     "Confirm exporting all currently ready documents?".to_string()
                 };
-                Ok(confirmation_response(confirmation.id, message))
+                let confirmation_id = confirmation.id;
+                Ok(PrepareToolExecution {
+                    tool_result: json!({
+                        "ok": true,
+                        "tool": tool_call.name,
+                        "result": {
+                            "message": message,
+                            "confirmation_id": confirmation_id,
+                            "document_id": document_id,
+                            "document_short_ref": payload.get("document_short_ref").and_then(|v| v.as_str()),
+                            "date_from": payload.get("date_from").and_then(|v| v.as_str()),
+                            "date_to": payload.get("date_to").and_then(|v| v.as_str()),
+                            "document_types": payload.get("document_types").cloned(),
+                            "confidence_min": payload.get("confidence_min").cloned(),
+                        },
+                        "result_description": "The result contains a prepared export action, not an executed export. ok indicates whether the preparation succeeded. message is the assistant-facing explanation of what export scope was prepared or why it could not be prepared. If confirmation data is present, confirmation_id identifies the pending confirmation and any returned document reference, document identifiers, or filter values identify the export scope that was prepared. If you answer from this result, make it explicit that export has been prepared for confirmation and has not yet been executed.",
+                    }),
+                    response: confirmation_response(confirmation_id, message),
+                })
             }
-            other => Ok(GatewayMessageResponse::text(format!(
-                "I cannot prepare that action yet: {}.",
-                other
-            ))),
+            "prepare_process_accounting_documents" => {
+                let selection = accounting_processing_selection_from_tool_args(&tool_call.args)?;
+                let preview =
+                    preview_accounting_processing_selection(&self.pool, selection).await?;
+                let message = describe_accounting_processing_preview(&preview);
+                if preview.eligible_documents.is_empty() {
+                    return Ok(PrepareToolExecution {
+                        tool_result: json!({
+                            "ok": false,
+                            "tool": tool_call.name,
+                            "error": message,
+                        }),
+                        response: GatewayMessageResponse::text(message),
+                    });
+                }
+
+                let payload = json!({
+                    "document_ids": preview
+                        .eligible_documents
+                        .iter()
+                        .map(|document| document.id)
+                        .collect::<Vec<_>>(),
+                    "document_short_refs": preview
+                        .eligible_documents
+                        .iter()
+                        .map(|document| document.short_ref.clone())
+                        .collect::<Vec<_>>(),
+                });
+                let confirmation = self
+                    .store_confirmation(
+                        workspace_id,
+                        source,
+                        None,
+                        AgentConfirmationActionKind::ProcessAccountingDocuments,
+                        payload,
+                    )
+                    .await?;
+                let confirmation_id = confirmation.id;
+                let eligible_documents = preview
+                    .eligible_documents
+                    .iter()
+                    .map(|document| {
+                        json!({
+                            "document_id": document.id,
+                            "document_short_ref": document.short_ref,
+                            "intake_status": document.intake_status,
+                            "accounting_status": document.accounting_status,
+                            "accounting_requested_at": document.accounting_requested_at,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let skipped_documents = preview
+                    .skipped
+                    .iter()
+                    .map(|skip| {
+                        json!({
+                            "document_short_ref": skip.short_ref,
+                            "status": skip.status,
+                            "reason": skip.reason,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                Ok(PrepareToolExecution {
+                    tool_result: json!({
+                        "ok": true,
+                        "tool": tool_call.name,
+                        "result": {
+                            "message": message,
+                            "confirmation_id": confirmation_id,
+                            "eligible_documents": eligible_documents,
+                            "skipped_documents": skipped_documents,
+                            "document_ids": preview
+                                .eligible_documents
+                                .iter()
+                                .map(|document| document.id)
+                                .collect::<Vec<_>>(),
+                            "document_short_refs": preview
+                                .eligible_documents
+                                .iter()
+                                .map(|document| document.short_ref.clone())
+                                .collect::<Vec<_>>(),
+                        },
+                        "result_description": "The result contains a prepared accounting-processing action, not started accounting work. ok indicates whether the preparation succeeded. message is the assistant-facing explanation of what was prepared or why it could not be prepared. If the result includes eligible and skipped documents, eligible documents are the ones that can proceed if confirmed and skipped documents are the ones that will not be processed in this prepared action. If confirmation data is present, confirmation_id identifies the pending confirmation and any returned document references or document identifiers identify the prepared accounting-processing scope. If you answer from this result, make it explicit that accounting processing has been prepared for confirmation and has not yet started.",
+                    }),
+                    response: confirmation_response(confirmation_id, message),
+                })
+            }
+            other => Ok(PrepareToolExecution {
+                tool_result: json!({
+                    "ok": false,
+                    "tool": tool_call.name,
+                    "error": format!("I cannot prepare that action yet: {}.", other),
+                }),
+                response: GatewayMessageResponse::text(format!(
+                    "I cannot prepare that action yet: {}.",
+                    other
+                )),
+            }),
         }
     }
 
@@ -696,6 +833,33 @@ impl AgentGatewayState {
                 let args = confirmation_export_args(&confirmation);
                 export_documents(self, source, confirmation.workspace_id, &args).await?
             }
+            AgentConfirmationActionKind::ProcessAccountingDocuments => {
+                let document_ids = confirmation_document_ids(&confirmation)?;
+                let candidates =
+                    accounting_processing_candidates_by_ids(&self.pool, &document_ids).await?;
+                let eligible = candidates
+                    .into_iter()
+                    .filter(|candidate| {
+                        candidate.intake_status == "INGESTED"
+                            && candidate.accounting_status == "NOT_REQUESTED"
+                    })
+                    .collect::<Vec<_>>();
+                if eligible.is_empty() {
+                    GatewayMessageResponse::text(
+                        "Those documents are no longer eligible for accounting processing.",
+                    )
+                } else {
+                    let execution = execute_accounting_processing_request(
+                        &self.pool,
+                        &self.queue_producer,
+                        &eligible,
+                    )
+                    .await?;
+                    GatewayMessageResponse::text(describe_accounting_processing_execution(
+                        &execution,
+                    ))
+                }
+            }
         };
 
         Ok(GatewayActionResponse::from_message_response(
@@ -814,6 +978,55 @@ fn export_payload_from_tool_args(args: &serde_json::Value) -> anyhow::Result<ser
     Ok(serde_json::Value::Object(payload))
 }
 
+fn accounting_processing_selection_from_tool_args(
+    args: &serde_json::Value,
+) -> anyhow::Result<AccountingProcessingSelection> {
+    let single = args
+        .get("document_short_ref")
+        .and_then(|value| value.as_str());
+    let multiple = args
+        .get("document_short_refs")
+        .and_then(|value| value.as_array());
+    let all_eligible = args
+        .get("all_eligible")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+
+    let selector_count =
+        usize::from(single.is_some()) + usize::from(multiple.is_some()) + usize::from(all_eligible);
+    if selector_count != 1 {
+        return Err(anyhow::anyhow!(
+            "provide exactly one of document_short_ref, document_short_refs, or all_eligible"
+        ));
+    }
+
+    if let Some(raw) = single {
+        return normalize_short_ref(raw)
+            .map(AccountingProcessingSelection::One)
+            .ok_or_else(|| anyhow::anyhow!("invalid document_short_ref: {raw}"));
+    }
+
+    if let Some(values) = multiple {
+        let mut refs = Vec::new();
+        for value in values {
+            let raw = value
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("document_short_refs must contain only strings"))?;
+            let normalized = normalize_short_ref(raw)
+                .ok_or_else(|| anyhow::anyhow!("invalid document_short_ref: {raw}"))?;
+            if !refs.contains(&normalized) {
+                refs.push(normalized);
+            }
+        }
+        if refs.is_empty() {
+            return Err(anyhow::anyhow!("document_short_refs must not be empty"));
+        }
+        return Ok(AccountingProcessingSelection::Many(refs));
+    }
+
+    Ok(AccountingProcessingSelection::AllEligible)
+}
+
 fn confirmation_document_short_ref(confirmation: &AgentConfirmation) -> anyhow::Result<String> {
     confirmation
         .payload
@@ -858,56 +1071,32 @@ fn confirmation_export_args(confirmation: &AgentConfirmation) -> GatewayIntentAr
     }
 }
 
+fn confirmation_document_ids(confirmation: &AgentConfirmation) -> anyhow::Result<Vec<i64>> {
+    let ids = confirmation
+        .payload
+        .get("document_ids")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| anyhow::anyhow!("confirmation missing document_ids"))?
+        .iter()
+        .map(|value| {
+            value
+                .as_i64()
+                .ok_or_else(|| anyhow::anyhow!("confirmation document_ids must be integers"))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    if ids.is_empty() {
+        return Err(anyhow::anyhow!(
+            "confirmation document_ids must not be empty"
+        ));
+    }
+
+    Ok(ids)
+}
+
 fn slash_route(resolution: &GatewayIntentResolution) -> SlashRoute {
     match resolution.intent {
         GatewayIntentKind::Help => SlashRoute::Help,
-        GatewayIntentKind::Status => {
-            if let Some(short_ref) = resolution.args.document_short_ref.as_deref() {
-                SlashRoute::ReadOnlyTool(ReadOnlyToolCall {
-                    name: "get_document".to_string(),
-                    args: json!({ "document_short_ref": short_ref }),
-                })
-            } else {
-                SlashRoute::ReadOnlyTool(ReadOnlyToolCall {
-                    name: "document_status_summary".to_string(),
-                    args: json!({}),
-                })
-            }
-        }
-        GatewayIntentKind::Documents => SlashRoute::ReadOnlyTool(ReadOnlyToolCall {
-            name: "list_documents".to_string(),
-            args: json!({ "limit": 10 }),
-        }),
-        GatewayIntentKind::Pending => SlashRoute::ReadOnlyTool(ReadOnlyToolCall {
-            name: "list_pending_reviews".to_string(),
-            args: json!({ "limit": 10 }),
-        }),
-        GatewayIntentKind::Ready => SlashRoute::ReadOnlyTool(ReadOnlyToolCall {
-            name: "list_export_ready".to_string(),
-            args: json!({ "limit": 10 }),
-        }),
-        GatewayIntentKind::Last => SlashRoute::ReadOnlyTool(ReadOnlyToolCall {
-            name: "list_documents".to_string(),
-            args: json!({ "limit": 1 }),
-        }),
-        GatewayIntentKind::Why if resolution.args.document_short_ref.is_some() => {
-            let short_ref = resolution
-                .args
-                .document_short_ref
-                .as_deref()
-                .unwrap_or_default();
-            SlashRoute::ReadOnlyTool(ReadOnlyToolCall {
-                name: "explain_document".to_string(),
-                args: json!({ "document_short_ref": short_ref }),
-            })
-        }
-        GatewayIntentKind::Unknown | GatewayIntentKind::GeneralAccountingChat => SlashRoute::Help,
-        GatewayIntentKind::Why
-        | GatewayIntentKind::Review
-        | GatewayIntentKind::Retry
-        | GatewayIntentKind::Export
-        | GatewayIntentKind::UploadInstruction
-        | GatewayIntentKind::OutOfScope => SlashRoute::DeterministicAction,
     }
 }
 
@@ -1053,8 +1242,19 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
+    use crate::config::{
+        AppConfig, DatabaseConfig, ExportConfig, LoggingConfig, MessagingConfig, MessagingProvider,
+        OllamaConfig, OllamaModels, SessionConfig, SlackConfig, TelegramConfig, UploadConfig,
+        WorkerConfig,
+    };
     use crate::db::ChannelType;
+    use crate::kv::EphemeralStore;
     use crate::messaging::contracts::ReviewFieldAction;
+    use crate::queue::QueueProducer;
+    use crate::skills::SkillRegistry;
+    use crate::web::events::AppEventBus;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
 
     #[test]
     fn document_action_encoding_round_trips_review_actions() {
@@ -1144,54 +1344,16 @@ mod tests {
     }
 
     #[test]
-    fn read_only_slash_commands_route_to_forced_tools() {
-        let status = parse_slash_intent("/status").unwrap();
-        match slash_route(&status) {
-            SlashRoute::ReadOnlyTool(tool_call) => {
-                assert_eq!(tool_call.name, "document_status_summary");
-                assert_eq!(tool_call.args, json!({}));
-            }
-            _ => panic!("status should route to read-only tool"),
-        }
-
-        let pending = parse_slash_intent("/pending").unwrap();
-        match slash_route(&pending) {
-            SlashRoute::ReadOnlyTool(tool_call) => {
-                assert_eq!(tool_call.name, "list_pending_reviews");
-                assert_eq!(tool_call.args["limit"], 10);
-            }
-            _ => panic!("pending should route to read-only tool"),
-        }
-
-        let why = parse_slash_intent("/why D57").unwrap();
-        match slash_route(&why) {
-            SlashRoute::ReadOnlyTool(tool_call) => {
-                assert_eq!(tool_call.name, "explain_document");
-                assert_eq!(tool_call.args["document_short_ref"], "D000057");
-            }
-            _ => panic!("why with document_short_ref should route to read-only tool"),
-        }
+    fn help_is_the_only_slash_route() {
+        let help = parse_slash_intent("/help").unwrap();
+        assert!(matches!(slash_route(&help), SlashRoute::Help));
     }
 
     #[test]
-    fn action_slash_commands_remain_deterministic() {
-        let review = parse_slash_intent("/review D57").unwrap();
-        assert!(matches!(
-            slash_route(&review),
-            SlashRoute::DeterministicAction
-        ));
-
-        let retry = parse_slash_intent("/retry D57").unwrap();
-        assert!(matches!(
-            slash_route(&retry),
-            SlashRoute::DeterministicAction
-        ));
-
-        let export = parse_slash_intent("/export").unwrap();
-        assert!(matches!(
-            slash_route(&export),
-            SlashRoute::DeterministicAction
-        ));
+    fn removed_slash_commands_fall_back_to_agent_chat() {
+        assert!(parse_slash_intent("/status").is_none());
+        assert!(parse_slash_intent("/review D57").is_none());
+        assert!(parse_slash_intent("/export").is_none());
     }
 
     #[test]
@@ -1204,6 +1366,225 @@ mod tests {
         assert!(!source.contains(&classifier_fn));
         assert!(!source.contains(&classifier_prompt));
         assert!(!source.contains(&parser_fn));
+    }
+
+    fn test_config() -> AppConfig {
+        AppConfig {
+            ollama: OllamaConfig {
+                base_url: "http://localhost:11434".to_string(),
+                api_key: None,
+                models: OllamaModels {
+                    vision: "vision-model".to_string(),
+                    accountant: "accountant-model".to_string(),
+                    assistant: "agent-chat-model".to_string(),
+                },
+                vision_prompt_path: "assets/prompts/sweden/vision_agent.md".to_string(),
+                accountant_prompt_path: "assets/prompts/sweden/accountant_agent.md".to_string(),
+                assistant_soul_prompt_path: "assets/prompts/_shared/assistant_agent_soul.md"
+                    .to_string(),
+                timeout_seconds: 120,
+                max_retries: 3,
+                initial_backoff_ms: 500,
+                max_backoff_seconds: 10,
+            },
+            database: DatabaseConfig {
+                path: ".finelor/db/finelor_test.db".to_string(),
+                max_connections: 10,
+            },
+            session: SessionConfig {
+                secret: "secret".to_string(),
+                expiry_days: 30,
+                cleanup_interval_seconds: 3600,
+                secure: false,
+            },
+            worker: WorkerConfig { max_job_retries: 3 },
+            web: crate::config::WebConfig {
+                allowed_hosts: vec![
+                    "localhost".to_string(),
+                    "127.0.0.1".to_string(),
+                    "::1".to_string(),
+                    "0.0.0.0".to_string(),
+                ],
+                allowed_origins: vec![
+                    "http://localhost:3000".to_string(),
+                    "http://127.0.0.1:3000".to_string(),
+                ],
+            },
+            messaging: MessagingConfig {
+                provider: MessagingProvider::Telegram,
+                telegram: TelegramConfig {
+                    bot_token: "dummy".to_string(),
+                    webhook_url: None,
+                },
+                slack: SlackConfig {
+                    bot_token: String::new(),
+                    app_token: String::new(),
+                },
+            },
+            upload: UploadConfig {
+                storage_path: "./.finelor/uploads".to_string(),
+            },
+            export: ExportConfig {
+                sie4_encoding: "PC8".to_string(),
+                download_expiry_hours: 168,
+                company_org_nr: "5560000000".to_string(),
+                company_name: "Your Company AB".to_string(),
+                fiscal_year_start: "20240101".to_string(),
+                fiscal_year_end: "20241231".to_string(),
+                output_path: "./.finelor/exports".to_string(),
+            },
+            logging: LoggingConfig {
+                level: "info".to_string(),
+                format: "json".to_string(),
+            },
+        }
+    }
+
+    fn test_gateway_state(pool: sqlx::SqlitePool) -> AgentGatewayState {
+        AgentGatewayState {
+            config: Arc::new(test_config()),
+            pool,
+            queue_producer: QueueProducer::new(Arc::new(crate::queue::InMemoryJobQueue::new())),
+            ephemeral_store: EphemeralStore::new(),
+            events: AppEventBus::new(16),
+            running_sessions: Arc::new(Mutex::new(Default::default())),
+            active_document_interaction_sessions: Arc::new(Mutex::new(Default::default())),
+            skills_registry: Arc::new(SkillRegistry::new()),
+        }
+    }
+
+    fn test_source() -> MessageSource {
+        MessageSource {
+            channel: ChannelType::Telegram,
+            channel_identifier: "12345".to_string(),
+            profile_identifier: Some("67890".to_string()),
+            message_id: Some("44".to_string()),
+            source_timestamp: None,
+            metadata: json!({ "chat_type": "private" }),
+        }
+    }
+
+    async fn create_document(
+        pool: &sqlx::SqlitePool,
+        preset: crate::document_state::TestDocumentStatePreset,
+    ) -> (i64, String) {
+        let document_id: i64 = sqlx::query_scalar(
+            r#"
+            INSERT INTO documents (filename, file_hash, original_path, mime_type)
+            VALUES ('doc.pdf', $1, '/tmp/doc.pdf', 'application/pdf')
+            RETURNING id
+            "#,
+        )
+        .bind(format!("gateway-{}", uuid::Uuid::new_v4()))
+        .fetch_one(pool)
+        .await
+        .expect("insert document");
+        crate::document_state::seed_document_state_preset(pool, document_id, preset)
+            .await
+            .expect("seed state");
+        let short_ref: String = sqlx::query_scalar("SELECT short_ref FROM documents WHERE id = $1")
+            .bind(document_id)
+            .fetch_one(pool)
+            .await
+            .expect("fetch short_ref");
+        (document_id, short_ref)
+    }
+
+    #[tokio::test]
+    async fn prepare_open_review_returns_result_description_in_tool_result() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .in_memory(true)
+                    .foreign_keys(true),
+            )
+            .await
+            .expect("connect");
+        crate::db::run_migrations(&pool).await.expect("migrate");
+        let (_, short_ref) = create_document(
+            &pool,
+            crate::document_state::TestDocumentStatePreset::PendingReview,
+        )
+        .await;
+
+        let state = test_gateway_state(pool);
+        let source = test_source();
+        let execution = state
+            .prepare_mutating_confirmation(
+                crate::workspace::active_workspace_id(),
+                &source,
+                &ReadOnlyToolCall {
+                    name: "prepare_open_review".to_string(),
+                    args: json!({ "document_short_ref": short_ref }),
+                },
+            )
+            .await
+            .expect("prepare review");
+
+        assert_eq!(execution.tool_result["ok"], true);
+        assert!(
+            execution.tool_result["result_description"]
+                .as_str()
+                .expect("result_description")
+                .contains("prepared review action")
+        );
+        assert!(
+            execution.tool_result["result"]["confirmation_id"]
+                .as_str()
+                .is_some()
+        );
+        assert!(execution.response.buttons.is_some());
+    }
+
+    #[tokio::test]
+    async fn prepare_process_accounting_documents_returns_result_description_and_preview_fields() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .in_memory(true)
+                    .foreign_keys(true),
+            )
+            .await
+            .expect("connect");
+        crate::db::run_migrations(&pool).await.expect("migrate");
+        let (document_id, short_ref) = create_document(
+            &pool,
+            crate::document_state::TestDocumentStatePreset::IntakeIngested,
+        )
+        .await;
+
+        let state = test_gateway_state(pool);
+        let source = test_source();
+        let execution = state
+            .prepare_mutating_confirmation(
+                crate::workspace::active_workspace_id(),
+                &source,
+                &ReadOnlyToolCall {
+                    name: "prepare_process_accounting_documents".to_string(),
+                    args: json!({ "document_short_ref": short_ref }),
+                },
+            )
+            .await
+            .expect("prepare accounting processing");
+
+        assert_eq!(execution.tool_result["ok"], true);
+        assert!(
+            execution.tool_result["result_description"]
+                .as_str()
+                .expect("result_description")
+                .contains("prepared accounting-processing action")
+        );
+        assert_eq!(
+            execution.tool_result["result"]["document_ids"][0],
+            json!(document_id)
+        );
+        assert_eq!(
+            execution.tool_result["result"]["eligible_documents"][0]["document_short_ref"],
+            json!(short_ref)
+        );
+        assert!(execution.response.buttons.is_some());
     }
 
     #[test]
@@ -1244,6 +1625,41 @@ mod tests {
     }
 
     #[test]
+    fn accounting_processing_selection_from_tool_args_requires_exactly_one_selector() {
+        let err = accounting_processing_selection_from_tool_args(&json!({}))
+            .expect_err("missing selector should fail");
+        assert!(err.to_string().contains("exactly one"));
+
+        let err = accounting_processing_selection_from_tool_args(&json!({
+            "document_short_ref": "D57",
+            "all_eligible": true
+        }))
+        .expect_err("multiple selectors should fail");
+        assert!(err.to_string().contains("exactly one"));
+    }
+
+    #[test]
+    fn accounting_processing_selection_from_tool_args_normalizes_refs() {
+        let single = accounting_processing_selection_from_tool_args(&json!({
+            "document_short_ref": "57"
+        }))
+        .expect("single selector");
+        assert_eq!(
+            single,
+            AccountingProcessingSelection::One("D000057".to_string())
+        );
+
+        let many = accounting_processing_selection_from_tool_args(&json!({
+            "document_short_refs": ["57", "D000058", "57"]
+        }))
+        .expect("many selector");
+        assert_eq!(
+            many,
+            AccountingProcessingSelection::Many(vec!["D000057".to_string(), "D000058".to_string()])
+        );
+    }
+
+    #[test]
     fn confirmation_export_args_reads_payload_without_normalizing_again() {
         let confirmation = AgentConfirmation {
             id: "confirmation".to_string(),
@@ -1270,5 +1686,27 @@ mod tests {
         assert_eq!(args.date_to.as_deref(), Some("2026-01-31"));
         assert_eq!(args.document_types, Some(vec!["INVOICE".to_string()]));
         assert_eq!(args.confidence_min, Some(0.75));
+    }
+
+    #[test]
+    fn confirmation_document_ids_reads_integer_payload() {
+        let confirmation = AgentConfirmation {
+            id: "confirmation".to_string(),
+            workspace_id: Uuid::new_v4(),
+            document_id: None,
+            channel_type: "telegram".to_string(),
+            channel_identifier: "chat".to_string(),
+            profile_identifier: None,
+            action_kind: AgentConfirmationActionKind::ProcessAccountingDocuments,
+            payload: json!({
+                "document_ids": [7, 8]
+            }),
+            expires_at: chrono::Utc::now().timestamp() + 60,
+        };
+
+        assert_eq!(
+            confirmation_document_ids(&confirmation).unwrap(),
+            vec![7, 8]
+        );
     }
 }

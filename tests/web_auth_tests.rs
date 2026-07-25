@@ -485,7 +485,7 @@ async fn test_onboarding_and_settings_server_fns_persist_company_profile() {
     let summary_endpoint = format!(
         "http://{}{}",
         addr,
-        <finelor::web::server::auth::GetDashboardSummary as ServerFn>::PATH
+        <finelor::web::server::dashboard::GetDashboardSummary as ServerFn>::PATH
     );
     let summary_raw = client
         .post(&summary_endpoint)
@@ -505,7 +505,7 @@ async fn test_onboarding_and_settings_server_fns_persist_company_profile() {
     let onboarding_endpoint = format!(
         "http://{}{}",
         addr,
-        <finelor::web::server::auth::CompleteCompanyOnboarding as ServerFn>::PATH
+        <finelor::web::server::dashboard::CompleteCompanyOnboarding as ServerFn>::PATH
     );
     let onboarding_response = client
         .post(&onboarding_endpoint)
@@ -704,7 +704,7 @@ async fn test_connect_telegram_for_active_workspace_allows_multiple_channels_and
         + i64::from_le_bytes(Uuid::new_v4().as_bytes()[..8].try_into().unwrap()).abs() % 800_000;
 
     let first =
-        finelor::web::server::auth::connect_telegram_for_workspace(&pool, workspace_id, chat_a)
+        finelor::web::server::channels::connect_telegram_for_workspace(&pool, workspace_id, chat_a)
             .await
             .expect("First telegram connect should succeed");
     assert!(
@@ -713,7 +713,7 @@ async fn test_connect_telegram_for_active_workspace_allows_multiple_channels_and
     );
 
     let duplicate_same =
-        finelor::web::server::auth::connect_telegram_for_workspace(&pool, workspace_id, chat_a)
+        finelor::web::server::channels::connect_telegram_for_workspace(&pool, workspace_id, chat_a)
             .await
             .expect("Same telegram chat id should be treated as already connected");
     assert!(
@@ -722,7 +722,7 @@ async fn test_connect_telegram_for_active_workspace_allows_multiple_channels_and
     );
 
     let second_different =
-        finelor::web::server::auth::connect_telegram_for_workspace(&pool, workspace_id, chat_b)
+        finelor::web::server::channels::connect_telegram_for_workspace(&pool, workspace_id, chat_b)
             .await
             .expect("Different telegram chat id should also connect");
     assert!(

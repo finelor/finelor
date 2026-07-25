@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{info, warn};
 
-use crate::agents::{Agent, AgentContext, DocumentStatus, FieldLoadMode, db_helpers};
+use crate::agents::{Agent, AgentContext, FieldLoadMode, db_helpers};
+use crate::document_state;
 use crate::error::{AppError, AppResult};
 use crate::inference::{
     ChatJsonRequest, ChatMessage, InferenceProvider, extract_json_from_response,
@@ -629,9 +630,16 @@ impl Agent for AccountantAgent {
         )
         .await?;
 
-        // Mark document as complete
+        document_state::complete_accountant_review(&self.context.pool, input.document_id).await?;
         self.context
-            .update_document_status(input.document_id, DocumentStatus::AccountantReviewed)
+            .record_document_event(
+                input.document_id,
+                "STATUS_CHANGED",
+                serde_json::json!({
+                    "accounting_status": "VALIDATING",
+                    "run_kind": "VALIDATION"
+                }),
+            )
             .await?;
         self.context
             .record_document_event(

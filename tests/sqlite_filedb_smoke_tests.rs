@@ -4,7 +4,8 @@ mod common;
 
 use std::sync::Arc;
 
-use finelor::agents::{AgentContext, DocumentStatus};
+use common::TestDocumentStatePreset as Preset;
+use finelor::agents::AgentContext;
 use finelor::orchestration::JobProcessor;
 use finelor::queue::{Job, JobType, QueueConsumer, QueueProducer};
 use finelor::web::events::AppEventBus;
@@ -15,21 +16,10 @@ fn context(pool: SqlitePool) -> AgentContext {
     AgentContext::new(pool, common::test_config(), AppEventBus::new(16))
 }
 
-async fn create_document(pool: &SqlitePool, status: &str, original_path: Option<&str>) -> i64 {
-    let hash = format!("filedb-flow-{}", uuid::Uuid::new_v4());
-    sqlx::query_scalar::<_, i64>(
-        r#"
-        INSERT INTO documents (filename, status, file_hash, original_path, mime_type)
-        VALUES ('flow.png', $1, $2, $3, 'image/png')
-        RETURNING id
-        "#,
-    )
-    .bind(status)
-    .bind(hash)
-    .bind(original_path.unwrap_or(""))
-    .fetch_one(pool)
-    .await
-    .expect("insert document")
+async fn create_document(pool: &SqlitePool, preset: Preset, original_path: Option<&str>) -> i64 {
+    common::create_document_with_state_preset(pool, preset, original_path, "image/png")
+        .await
+        .0
 }
 
 fn write_test_png() -> std::path::PathBuf {
@@ -112,7 +102,7 @@ async fn filedb_pipeline_smoke_runs_to_validation_boundary() {
     let image_path = write_test_png();
     let document_id = create_document(
         &pool,
-        DocumentStatus::ProcessingVision.as_str(),
+        Preset::IntakeProcessing,
         Some(&image_path.to_string_lossy()),
     )
     .await;
@@ -122,6 +112,24 @@ async fn filedb_pipeline_smoke_runs_to_validation_boundary() {
         .expect("enqueue vision");
 
     run_next_job(&pool, &queue, &producer, fake.clone()).await;
+
+    let pending_after_vision = QueueConsumer::new(queue.clone(), "filedb-peek")
+        .poll(1)
+        .await
+        .expect("poll after vision");
+    assert!(
+        pending_after_vision.is_empty(),
+        "vision completion should not automatically enqueue accountant"
+    );
+
+    finelor::document_state::request_accounting(&pool, document_id)
+        .await
+        .expect("mark accounting requested");
+    producer
+        .enqueue(&Job::new(JobType::Accountant, document_id, 0))
+        .await
+        .expect("enqueue accountant");
+
     run_next_job(&pool, &queue, &producer, fake.clone()).await;
     run_next_job(&pool, &queue, &producer, fake.clone()).await;
 

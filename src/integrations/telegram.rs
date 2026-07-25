@@ -167,39 +167,6 @@ impl TelegramNotifier {
 
         Ok(())
     }
-
-    /// Send document status update
-    pub async fn send_status_update(
-        &self,
-        chat_id: i64,
-        document_id: uuid::Uuid,
-        status: &str,
-    ) -> Result<(), AppError> {
-        let status_emoji = status_to_emoji(status);
-
-        let lines = [
-            markdown_message(&[
-                MarkdownSegment {
-                    text: status_emoji,
-                    style: MarkdownStyle::Plain,
-                },
-                MarkdownSegment {
-                    text: " ",
-                    style: MarkdownStyle::Plain,
-                },
-                MarkdownSegment {
-                    text: "Document Update",
-                    style: MarkdownStyle::Bold,
-                },
-            ]),
-            String::new(),
-            markdown_label_code_value("Document ID", &document_id.to_string()),
-            markdown_label_value("Status", status),
-        ];
-        let message = lines.join("\n");
-
-        self.send_notification(chat_id, &message).await
-    }
 }
 
 /// Helper function to escape markdown special characters
@@ -621,64 +588,6 @@ macro_rules! markdown_msg {
     }};
 }
 
-/// Public helper to get emoji for a document status string.
-pub fn status_to_emoji(status: &str) -> &'static str {
-    match status {
-        "RECEIVED" => "📥",
-        "PROCESSING_VISION" | "PROCESSING_ACCOUNTANT" | "PROCESSING_VALIDATOR" => "⏳",
-        "VISION_COMPLETE" | "ACCOUNTANT_REVIEWED" | "VALIDATED" => "✨",
-        "PENDING_HUMAN_REVIEW" => "⚠️",
-        "EXPORT_READY" => "✅",
-        "GENERATING_SIE4" => "📦",
-        "FAILED" => "❌",
-        _ => "📄",
-    }
-}
-
-/// Build a concise pipeline-progress Telegram message (MarkdownV2-safe).
-pub fn build_pipeline_progress_message(
-    short_ref: &str,
-    status: &str,
-    reason: Option<&str>,
-) -> String {
-    let emoji = status_to_emoji(status);
-
-    let status_label = match status {
-        "VISION_COMPLETE" => "Got it! I'm reading your document.",
-        "ACCOUNTANT_REVIEWED" => "Accounting analysis complete.",
-        "VALIDATED" => "Validation complete.",
-        "EXPORT_READY" => "Done! Ready for export.",
-        "PENDING_HUMAN_REVIEW" => "I need your help with this one.",
-        "FAILED" => "Document could not be processed.",
-        _ => "Status updated.",
-    };
-
-    let mut lines = vec![markdown_message(&[
-        MarkdownSegment {
-            text: emoji,
-            style: MarkdownStyle::Plain,
-        },
-        MarkdownSegment {
-            text: " ",
-            style: MarkdownStyle::Plain,
-        },
-        MarkdownSegment {
-            text: status_label,
-            style: MarkdownStyle::Bold,
-        },
-    ])];
-
-    lines.push(String::new());
-    lines.push(markdown_label_code_value("Reference", short_ref));
-
-    if let Some(reason) = reason {
-        lines.push(String::new());
-        lines.push(markdown_label_value("Reason", reason));
-    }
-
-    lines.join("\n")
-}
-
 #[cfg(feature = "ssr")]
 pub async fn fetch_bot_username(bot_token: &str) -> Result<String, ServerFnError> {
     let url = format!("https://api.telegram.org/bot{}/getMe", bot_token);
@@ -1091,37 +1000,6 @@ mod tests {
             markdown_label_code_value("Document ID", "550e8400-e29b-41d4-a716-446655440000"),
             "Document ID: `550e8400\\-e29b\\-41d4\\-a716\\-446655440000`"
         );
-    }
-
-    #[test]
-    fn test_build_pipeline_progress_message_escapes_short_ref() {
-        let msg = build_pipeline_progress_message("D000123", "EXPORT_READY", None);
-        assert!(msg.contains("*Done\\! Ready for export\\.*"));
-        assert!(msg.contains("`D000123`"));
-    }
-
-    #[test]
-    fn test_build_pipeline_progress_message_includes_reason() {
-        let msg = build_pipeline_progress_message(
-            "D000123",
-            "PENDING_HUMAN_REVIEW",
-            Some("Validation found issues that need review."),
-        );
-        assert!(msg.contains("*I need your help with this one\\.*"));
-        assert!(msg.contains(r"Reason: Validation found issues that need review\."));
-    }
-
-    #[test]
-    fn test_build_pipeline_progress_message_vision_complete() {
-        let msg = build_pipeline_progress_message("D000001", "VISION_COMPLETE", None);
-        assert!(msg.contains("*Got it\\! I'm reading your document\\.*"));
-        assert!(msg.contains("`D000001`"));
-    }
-
-    #[test]
-    fn test_build_pipeline_progress_message_unknown_status() {
-        let msg = build_pipeline_progress_message("R0001", "CUSTOM_STATUS", None);
-        assert!(msg.contains("*Status updated\\.*"));
     }
 
     #[test]

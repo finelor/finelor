@@ -7,10 +7,11 @@ use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::Row;
 use tracing::{info, warn};
 
-use crate::agents::{Agent, AgentContext, DocumentStatus, db_helpers};
+use crate::agents::{Agent, AgentContext};
+use crate::document_state;
 use crate::error::{AppError, AppResult};
 use crate::inference::{ImageJsonRequest, InferenceProvider, extract_json_from_response};
-use crate::queue::{Job, JobType, QueueProducer};
+use crate::queue::QueueProducer;
 
 /// Input for the VisionAgent
 #[derive(Debug, Clone)]
@@ -133,7 +134,6 @@ where
 pub struct VisionAgent {
     context: AgentContext,
     inference_provider: Arc<dyn InferenceProvider>,
-    queue_producer: QueueProducer,
     prompt: String,
     model: String,
 }
@@ -142,7 +142,7 @@ impl VisionAgent {
     pub fn new(
         context: AgentContext,
         inference_provider: Arc<dyn InferenceProvider>,
-        queue_producer: QueueProducer,
+        _queue_producer: QueueProducer,
     ) -> Self {
         let model = context.config.ollama.models.vision.clone();
         let prompt_path = context.config.ollama.vision_prompt_path.clone();
@@ -158,7 +158,6 @@ impl VisionAgent {
         Self {
             context,
             inference_provider,
-            queue_producer,
             prompt,
             model,
         }
@@ -408,12 +407,13 @@ impl Agent for VisionAgent {
             "Starting vision extraction"
         );
 
-        // Update status and timestamps
+        document_state::mark_intake_processing(&self.context.pool, input.document_id).await?;
         self.context
-            .update_document_status(input.document_id, DocumentStatus::ProcessingVision)
-            .await?;
-
-        db_helpers::update_vision_timestamps(&self.context.pool, input.document_id, true, false)
+            .record_document_event(
+                input.document_id,
+                "STATUS_CHANGED",
+                serde_json::json!({ "intake_status": "PROCESSING" }),
+            )
             .await?;
 
         // Get file path from DB if not provided
@@ -485,29 +485,20 @@ impl Agent for VisionAgent {
         self.store_extracted_fields(input.document_id, &extracted_fields)
             .await?;
 
-        // Update status
+        document_state::mark_intake_ingested(&self.context.pool, input.document_id).await?;
         self.context
-            .update_document_status(input.document_id, DocumentStatus::VisionComplete)
+            .record_document_event(
+                input.document_id,
+                "STATUS_CHANGED",
+                serde_json::json!({ "intake_status": "INGESTED" }),
+            )
             .await?;
 
-        db_helpers::update_vision_timestamps(&self.context.pool, input.document_id, false, true)
-            .await?;
-
-        // Queue next step - AccountantAgent
-        let job = Job::new(JobType::Accountant, input.document_id, 0);
-        self.queue_producer.enqueue(&job).await?;
-
-        info!(
-            document_id = %input.document_id,
-            job_id = %job.id,
-            "Queued for accountant processing"
-        );
         self.context
             .record_document_event(
                 input.document_id,
                 "VISION_COMPLETED",
                 serde_json::json!({
-                    "job_id": job.id,
                     "confidence": extracted_fields.confidence,
                     "document_type": extracted_fields.document_type,
                 }),

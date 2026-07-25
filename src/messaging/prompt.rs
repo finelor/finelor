@@ -89,19 +89,21 @@ async fn assemble_system_prompt(input: &PromptAssemblyInput<'_>) -> String {
          {conversation_context}\n\n\
          # Runtime Tools\n\
          Read-only Finelor tools are provided by the runtime. Use them for operational document questions and whenever the identity snapshot is insufficient. \
-         If a request clearly matches an available skill, load that skill with skill_view(name) before answering, then use runtime tools as needed for current workspace data. \
-         Use skills for workflow, constraints, and response format; use tools for live operational facts. \
-         If a loaded skill exposes a relevant reference or template, load only the specific supporting file you need with skill_view(name, path). \
-         Skip skill loading only for trivial turns that are fully answerable without workflow guidance. \
-         Mutating tools only prepare a user confirmation prompt; they do not execute changes. \
+         Match skills by intent, not by message length or perceived simplicity. If a request clearly matches an available skill, you must load that skill with skill_view(name) before answering. \
+         After loading a relevant skill, treat its workflow instructions as binding for this turn. If the loaded skill says to use a runtime tool for live workspace data, you must call that tool before answering and must not answer from memory, prior turns, or the skill text alone. A direct tool call is not compliant when a relevant skill should have been loaded first. \
+         Use skills for procedure, constraints, and response format; use tools for live operational facts. \
+         If a loaded skill exposes a relevant reference or template, load only the specific supporting file you need with skill_view(name, path), and only when the loaded skill makes that supporting file materially necessary for the answer. \
+         Trivial means no tools, no live data, and no procedure. Status questions, document lookups, retries, exports, review actions, accounting actions, and checklist/report requests are never trivial. Skip skill loading only for truly trivial turns such as greetings or acknowledgements. \
+         Mutating tools only prepare a user confirmation prompt; they do not execute changes. If a user request requires a confirmation boundary for export, retry, review, or accounting processing, you must call the corresponding prepare_* tool before replying. Do not write your own confirmation prompt in prose, do not ask the user to type a manual confirmation phrase, and do not imply that an action is prepared, confirmed, started, or queued unless that came from the deterministic prepare/confirmation path. \
          You may make at most {max_tool_calls} read-only tool calls in this turn. \
          skill_view also uses this read-only tool budget, so load at most one matching skill by default and only fetch supporting files that materially improve the answer. \
+         Before answering, verify: if a skill matched the request, did you load it; and if the loaded skill required live data, did you call the required runtime tool first. If not, stop and do that before answering. \
          Use total_count, not returned_count, when answering count questions. \
          Use concise Markdown for readable chat replies. Prefer short bullets over tables. \
-         If the user asks for something outside Finelor, invoices, receipts, accounting workflow, document review, uploads, exports, or workspace accounting data, return an answer refusing briefly and describe supported Finelor work. \
+         If the user asks for something outside Finelor, invoices, receipts, accounting operations, document review, uploads, exports, or workspace accounting data, return an answer refusing briefly and describe supported Finelor work. \
          If the user asks for analytics that no available tool supports, answer that you cannot answer it precisely yet and describe supported operational document queries.\n\n\
          # Current Capability Boundary\n\
-         Use recent session context only to resolve conversational references such as \"that one\", \"the first one\", \"those\", \"do it\", or \"why\". \
+         Use recent session context only to resolve conversational references such as \"that one\", \"the first one\", \"those\", \"do it\", or \"why\". Never use recent session context as a reason to skip skill loading or skip a required live tool call. \
          Treat the snapshot and read-only tool results as workspace-scoped and point-in-time. Do not invent documents, statuses, amounts, exports, or actions outside the snapshot or tool results. \
          Always use tools or deterministic action paths for current accounting state and mutations; conversation history is not accounting truth. \
         Do not claim to have queried live data beyond the provided snapshot and tools. Do not provide final accounting, tax, or legal advice.",
@@ -181,13 +183,13 @@ async fn build_skills_context(registry: &SkillRegistry) -> String {
         lines.push(format!("- {}: {}", skill.name(), skill.description()));
     }
     lines.push(String::new());
-    lines.push("Match skills by request intent, not only by explicit skill name.".to_string());
+    lines.push("Match skills by request intent, not only by explicit skill name, message length, or perceived simplicity.".to_string());
     lines.push(
-        "When a request falls within an available skill, load that skill with skill_view(name) before answering."
+        "When a request falls within an available skill, you must load that skill with skill_view(name) before answering. A direct tool call is not compliant when a relevant skill should have been loaded first."
             .to_string(),
     );
     lines.push(
-        "Use tools after the skill load for live data, and load only the specific reference/template files needed with skill_view(name, path)."
+        "After loading a relevant skill, treat its workflow instructions as binding for this turn. If the skill tells you to use a runtime tool for live data, you must call that tool before answering and must not answer from memory, prior turns, or the skill text alone. Load only the specific reference/template files needed with skill_view(name, path). Trivial means no tools, no live data, and no procedure; status and document-operation requests are never trivial."
             .to_string(),
     );
 
@@ -315,7 +317,7 @@ mod tests {
         assert!(
             messages[0]
                 .content
-                .contains("Use skills for workflow, constraints, and response format")
+                .contains("Use skills for procedure, constraints, and response format")
         );
         assert!(
             messages[0]
@@ -480,7 +482,7 @@ mod tests {
             "zebra-helper",
             r#"---
 name: Zebra Helper
-description: Helps with structured zebra workflows
+description: Helps with structured zebra procedures
 category: accounting
 ---
 # Zebra Helper
@@ -495,7 +497,7 @@ Useful overview.
             "alpha-helper",
             r#"---
 name: Alpha Helper
-description: Helps with structured alpha workflows
+description: Helps with structured alpha procedures
 category: accounting
 ---
 # Alpha Helper
@@ -524,14 +526,15 @@ Useful overview.
         assert!(system.contains("# Available Skills"));
         assert!(system.contains("Alpha Helper"));
         assert!(system.contains("Zebra Helper"));
-        assert!(system.contains("Helps with structured alpha workflows"));
+        assert!(system.contains("Helps with structured alpha procedures"));
         assert!(system.contains("Match skills by request intent"));
-        assert!(system.contains("load that skill with skill_view(name) before answering"));
-        assert!(system.contains("load only the specific reference/template files needed"));
+        assert!(system.contains("must load that skill with skill_view(name) before answering"));
+        assert!(system.contains("must call that tool before answering"));
+        assert!(system.contains("Load only the specific reference/template files needed"));
         assert!(!system.contains("To use a skill, ask about it by name"));
         assert!(
-            system.find("- Alpha Helper: Helps with structured alpha workflows")
-                < system.find("- Zebra Helper: Helps with structured zebra workflows")
+            system.find("- Alpha Helper: Helps with structured alpha procedures")
+                < system.find("- Zebra Helper: Helps with structured zebra procedures")
         );
     }
 
@@ -545,7 +548,7 @@ Useful overview.
             "review-helper",
             r#"---
 name: Review Helper
-description: Helps with review workflows
+description: Helps with review procedures
 category: operations
 ---
 # Review Helper
@@ -570,7 +573,7 @@ Useful overview.
         .await;
 
         assert!(messages[0].content.contains("Review Helper"));
-        assert!(messages[0].content.contains("Helps with review workflows"));
+        assert!(messages[0].content.contains("Helps with review procedures"));
     }
 
     #[tokio::test]
