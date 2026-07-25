@@ -171,15 +171,37 @@ pub fn Badge(
 }
 
 #[component]
-pub fn StatusBadge(status: String) -> impl IntoView {
-    let tone = match status.as_str() {
-        "EXPORT_READY" | "EXPORTED" => Tone::Success,
-        "PENDING_HUMAN_REVIEW" => Tone::Warning,
-        "FAILED" => Tone::Error,
-        _ => Tone::Info,
-    };
+pub fn DocumentStateBadges(
+    #[prop(optional)] intake_status: String,
+    #[prop(optional)] accounting_status: String,
+) -> impl IntoView {
+    let mut badges: Vec<AnyView> = Vec::new();
 
-    view! { <Badge tone=tone>{status}</Badge> }
+    if !intake_status.is_empty() {
+        let status = intake_status;
+        let tone = match status.as_str() {
+            "FAILED" => Tone::Error,
+            "INGESTED" => Tone::Success,
+            _ => Tone::Info,
+        };
+        badges.push(view! { <Badge tone=tone>{format!("Intake: {}", status)}</Badge> }.into_any());
+    }
+
+    if !accounting_status.is_empty() {
+        let status = accounting_status;
+        let tone = match status.as_str() {
+            "FAILED" => Tone::Error,
+            "EXPORTED" | "READY_FOR_EXPORT" => Tone::Success,
+            "ACCOUNTING" | "VALIDATING" | "EXPORTING" | "REQUESTED" => Tone::Info,
+            "PENDING_REVIEW" => Tone::Warning,
+            _ => Tone::Neutral,
+        };
+        badges.push(
+            view! { <Badge tone=tone>{format!("Accounting: {}", status)}</Badge> }.into_any(),
+        );
+    }
+
+    view! { <div class="flex flex-wrap gap-2">{badges}</div> }
 }
 
 #[component]

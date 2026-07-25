@@ -4,6 +4,7 @@ mod common;
 
 use std::sync::Arc;
 
+use common::TestDocumentStatePreset as Preset;
 use finelor::agents::review::ReviewField;
 use finelor::db::ChannelType;
 use finelor::kv::EphemeralStore;
@@ -37,20 +38,14 @@ fn source(chat_id: &str) -> MessageSource {
     }
 }
 
-async fn create_document(pool: &SqlitePool, status: &str) -> (i64, String) {
-    let hash = format!("messaging-flow-{}", uuid::Uuid::new_v4());
-    sqlx::query_as::<_, (i64, String)>(
-        r#"
-        INSERT INTO documents (filename, status, file_hash, original_path, mime_type)
-        VALUES ('message-flow.pdf', $1, $2, '/tmp/message-flow.pdf', 'application/pdf')
-        RETURNING id, short_ref
-        "#,
+async fn create_document(pool: &SqlitePool, preset: Preset) -> (i64, String) {
+    common::create_document_with_state_preset(
+        pool,
+        preset,
+        Some("/tmp/message-flow.pdf"),
+        "application/pdf",
     )
-    .bind(status)
-    .bind(hash)
-    .fetch_one(pool)
     .await
-    .expect("insert document")
 }
 
 async fn insert_field(pool: &SqlitePool, document_id: i64, field_type: &str, value: &str) {
@@ -90,7 +85,7 @@ async fn gateway_status_command_uses_db_tool_and_persists_conversation_context()
     let pool = common::in_memory_pool().await;
     let queue = common::test_queue();
     let producer = QueueProducer::new(queue);
-    let (_, short_ref) = create_document(&pool, "PENDING_HUMAN_REVIEW").await;
+    let (_, short_ref) = create_document(&pool, Preset::PendingReview).await;
 
     let mock_server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -118,7 +113,7 @@ async fn gateway_status_command_uses_db_tool_and_persists_conversation_context()
     let response = state
         .handle_inbound_message(AgentInboundMessage::Text {
             source: source.clone(),
-            text: format!("/status {}", short_ref),
+            text: format!("What is the status of {}?", short_ref),
         })
         .await
         .expect("gateway status");
@@ -146,7 +141,7 @@ async fn pending_review_text_interaction_persists_correction_and_queues_validato
     let pool = common::in_memory_pool().await;
     let queue = common::test_queue();
     let producer = QueueProducer::new(queue.clone());
-    let (document_id, _) = create_document(&pool, "PENDING_HUMAN_REVIEW").await;
+    let (document_id, _) = create_document(&pool, Preset::PendingReview).await;
     insert_field(&pool, document_id, "supplier_name", "Old Supplier").await;
     sqlx::query(
         r#"
@@ -223,7 +218,7 @@ async fn confirmed_accounting_processing_marks_request_and_queues_accountant() {
     let pool = common::in_memory_pool().await;
     let queue = common::test_queue();
     let producer = QueueProducer::new(queue.clone());
-    let (document_id, short_ref) = create_document(&pool, "VISION_COMPLETE").await;
+    let (document_id, short_ref) = create_document(&pool, Preset::IntakeIngested).await;
 
     let state = gateway_state(pool.clone(), common::test_config(), producer);
     let source = source("accounting-chat");
@@ -257,12 +252,13 @@ async fn confirmed_accounting_processing_marks_request_and_queues_accountant() {
 
     assert!(!response.message.is_empty());
 
-    let requested_at: Option<String> =
-        sqlx::query_scalar("SELECT accounting_requested_at FROM documents WHERE id = $1")
-            .bind(document_id)
-            .fetch_one(&pool)
-            .await
-            .expect("accounting requested");
+    let requested_at: Option<String> = sqlx::query_scalar(
+        "SELECT requested_at FROM document_accounting_state WHERE document_id = $1",
+    )
+    .bind(document_id)
+    .fetch_one(&pool)
+    .await
+    .expect("accounting requested");
     assert!(requested_at.is_some());
 
     let jobs = common::drain_jobs(&queue, 10).await;

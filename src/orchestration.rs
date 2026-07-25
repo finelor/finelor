@@ -8,9 +8,10 @@ use sqlx::Row;
 use tracing::{error, info, warn};
 
 use crate::agents::{
-    AccountantAgent, AccountantInput, Agent, AgentContext, DocumentStatus, IntakeAgent,
-    ReviewAgent, ReviewInput, ValidatorAgent, ValidatorInput, VisionAgent, VisionInput, db_helpers,
+    AccountantAgent, AccountantInput, Agent, AgentContext, IntakeAgent, ReviewAgent, ReviewInput,
+    ValidatorAgent, ValidatorInput, VisionAgent, VisionInput,
 };
+use crate::document_state;
 use crate::error::AppResult;
 use crate::inference::{InferenceProvider, OllamaProvider};
 use crate::queue::{Job, JobType, QueueConsumer, QueueProducer};
@@ -99,24 +100,25 @@ impl JobProcessor {
                                 );
 
                                 if job.retries >= max_job_retries {
-                                    let _ = self
-                                        .context
-                                        .update_document_status(
-                                            job.document_id,
-                                            DocumentStatus::Failed,
-                                        )
-                                        .await;
+                                    let failed_job_type = job.job_type.clone();
+                                    let _ = document_state::mark_job_failed(
+                                        &self.context.pool,
+                                        job.document_id,
+                                        failed_job_type.clone(),
+                                        Some("job retry limit reached"),
+                                    )
+                                    .await;
                                     let _ = self
                                         .context
                                         .record_document_event(
                                             job.document_id,
                                             "DOCUMENT_FAILED",
                                             serde_json::json!({
-                                                "kind": "SYSTEM",
-                                                "stage": format!("{:?}", job.job_type).to_uppercase(),
-                                                "retryable": true,
-                                                "retries": job.retries,
-                                            }),
+                                            "kind": "SYSTEM",
+                                            "stage": format!("{:?}", failed_job_type).to_uppercase(),
+                                            "retryable": true,
+                                            "retries": job.retries,
+                                        }),
                                         )
                                     .await;
                                 }
@@ -172,8 +174,23 @@ impl JobProcessor {
                     .await?;
             }
             JobType::Accountant => {
+                document_state::start_accounting_with_metadata(
+                    &self.context.pool,
+                    job.document_id,
+                    Some("ollama"),
+                    Some(&self.context.config.ollama.models.accountant),
+                    Some(&self.context.config.ollama.accountant_prompt_path),
+                )
+                .await?;
                 self.context
-                    .update_document_status(job.document_id, DocumentStatus::ProcessingAccountant)
+                    .record_document_event(
+                        job.document_id,
+                        "STATUS_CHANGED",
+                        serde_json::json!({
+                            "accounting_status": "ACCOUNTING",
+                            "run_kind": "ACCOUNTING"
+                        }),
+                    )
                     .await?;
 
                 let agent = AccountantAgent::new(
@@ -185,9 +202,6 @@ impl JobProcessor {
                     .process(AccountantInput {
                         document_id: job.document_id,
                     })
-                    .await?;
-
-                db_helpers::update_accountant_timestamp(&self.context.pool, job.document_id)
                     .await?;
 
                 // Accountant-complete notification intentionally skipped
@@ -203,6 +217,7 @@ impl JobProcessor {
                     .await?;
             }
             JobType::Validator => {
+                document_state::start_validation(&self.context.pool, job.document_id).await?;
                 let agent = ValidatorAgent::new(self.context.clone(), job.field_load_mode);
                 agent
                     .process(ValidatorInput {
@@ -263,18 +278,32 @@ pub async fn recover_incomplete_jobs(
 ) -> AppResult<usize> {
     let rows = sqlx::query(
         r#"
-        SELECT id, status, priority, accounting_requested_at
-        FROM documents
-        WHERE status IN (
-            'RECEIVED',
-            'PROCESSING_VISION',
-            'VISION_COMPLETE',
-            'PROCESSING_ACCOUNTANT',
-            'ACCOUNTANT_REVIEWED',
-            'PROCESSING_VALIDATOR',
-            'VALIDATED'
-        )
-        ORDER BY received_at ASC, id ASC
+        SELECT
+            d.id,
+            d.priority,
+            dis.status AS intake_status,
+            das.status AS accounting_status,
+            das.completed_at AS accounting_completed_at,
+            (
+                SELECT dar.run_kind
+                FROM document_accounting_runs dar
+                WHERE dar.document_id = d.id
+                ORDER BY dar.created_at DESC, dar.id DESC
+                LIMIT 1
+            ) AS latest_accounting_run_kind,
+            (
+                SELECT dar.run_status
+                FROM document_accounting_runs dar
+                WHERE dar.document_id = d.id
+                ORDER BY dar.created_at DESC, dar.id DESC
+                LIMIT 1
+            ) AS latest_accounting_run_status
+        FROM documents d
+        JOIN document_intake_state dis ON dis.document_id = d.id
+        JOIN document_accounting_state das ON das.document_id = d.id
+        WHERE dis.status IN ('RECEIVED', 'PROCESSING')
+           OR das.status IN ('REQUESTED', 'ACCOUNTING', 'VALIDATING', 'EXPORTING')
+        ORDER BY d.received_at ASC, d.id ASC
         "#,
     )
     .fetch_all(pool)
@@ -283,13 +312,22 @@ pub async fn recover_incomplete_jobs(
     let mut recovered = 0usize;
     for row in rows {
         let document_id: i64 = row.try_get("id")?;
-        let status: String = row.try_get("status")?;
         let priority: Option<String> = row.try_get("priority")?;
-        let accounting_requested_at: Option<String> = row.try_get("accounting_requested_at")?;
+        let intake_status: String = row.try_get("intake_status")?;
+        let accounting_status: String = row.try_get("accounting_status")?;
+        let accounting_completed_at: Option<String> = row.try_get("accounting_completed_at")?;
+        let latest_accounting_run_kind: Option<String> =
+            row.try_get("latest_accounting_run_kind")?;
+        let latest_accounting_run_status: Option<String> =
+            row.try_get("latest_accounting_run_status")?;
 
-        let Some(job_type) =
-            recoverable_job_type(status.as_str(), accounting_requested_at.as_deref())
-        else {
+        let Some(job_type) = recoverable_job_type(
+            intake_status.as_str(),
+            accounting_status.as_str(),
+            accounting_completed_at.as_deref(),
+            latest_accounting_run_kind.as_deref(),
+            latest_accounting_run_status.as_deref(),
+        ) else {
             continue;
         };
 
@@ -300,7 +338,6 @@ pub async fn recover_incomplete_jobs(
 
         info!(
             document_id = %document_id,
-            status = %status,
             job_id = %job.id,
             job_type = ?job.job_type,
             "Recovered incomplete document pipeline job"
@@ -317,16 +354,37 @@ pub async fn recover_incomplete_jobs(
     Ok(recovered)
 }
 
-fn recoverable_job_type(status: &str, accounting_requested_at: Option<&str>) -> Option<JobType> {
-    match status {
-        "RECEIVED" | "PROCESSING_VISION" => Some(JobType::Vision),
-        "VISION_COMPLETE" if accounting_requested_at.is_some() => Some(JobType::Accountant),
-        "VISION_COMPLETE" => None,
-        "PROCESSING_ACCOUNTANT" => Some(JobType::Accountant),
-        "ACCOUNTANT_REVIEWED" | "PROCESSING_VALIDATOR" => Some(JobType::Validator),
-        "VALIDATED" => Some(JobType::Review),
-        _ => None,
+fn recoverable_job_type(
+    intake_status: &str,
+    accounting_status: &str,
+    accounting_completed_at: Option<&str>,
+    latest_accounting_run_kind: Option<&str>,
+    latest_accounting_run_status: Option<&str>,
+) -> Option<JobType> {
+    if matches!(intake_status, "RECEIVED" | "PROCESSING") {
+        return Some(JobType::Vision);
     }
+
+    if accounting_status == "REQUESTED" {
+        return Some(JobType::Accountant);
+    }
+
+    if accounting_status == "ACCOUNTING" && accounting_completed_at.is_none() {
+        return Some(JobType::Accountant);
+    }
+
+    if accounting_status == "VALIDATING"
+        && latest_accounting_run_kind == Some("VALIDATION")
+        && latest_accounting_run_status != Some("COMPLETED")
+    {
+        return Some(JobType::Validator);
+    }
+
+    if accounting_status == "VALIDATING" && accounting_completed_at.is_some() {
+        return Some(JobType::Review);
+    }
+
+    None
 }
 
 fn document_priority(priority: Option<&str>) -> i32 {
@@ -369,39 +427,60 @@ mod tests {
 
     #[test]
     fn recoverable_statuses_map_to_resume_jobs() {
-        for status in [
-            "RECEIVED",
-            "PROCESSING_VISION",
-            "PROCESSING_ACCOUNTANT",
-            "ACCOUNTANT_REVIEWED",
-            "PROCESSING_VALIDATOR",
-            "VALIDATED",
-        ] {
-            assert!(
-                recoverable_job_type(status, None).is_some(),
-                "{status} must map to a resume job"
-            );
-        }
-
         assert!(matches!(
-            recoverable_job_type("PROCESSING_VISION", None),
+            recoverable_job_type("PROCESSING", "NOT_REQUESTED", None, None, None),
             Some(JobType::Vision)
         ));
-        assert!(recoverable_job_type("VISION_COMPLETE", None).is_none());
         assert!(matches!(
-            recoverable_job_type("VISION_COMPLETE", Some("2026-01-01T00:00:00Z")),
+            recoverable_job_type("RECEIVED", "NOT_REQUESTED", None, None, None),
+            Some(JobType::Vision)
+        ));
+        assert!(recoverable_job_type("INGESTED", "NOT_REQUESTED", None, None, None).is_none());
+        assert!(matches!(
+            recoverable_job_type("INGESTED", "REQUESTED", None, None, None),
             Some(JobType::Accountant)
         ));
         assert!(matches!(
-            recoverable_job_type("ACCOUNTANT_REVIEWED", None),
+            recoverable_job_type(
+                "INGESTED",
+                "ACCOUNTING",
+                None,
+                Some("ACCOUNTING"),
+                Some("RUNNING")
+            ),
+            Some(JobType::Accountant)
+        ));
+        assert!(matches!(
+            recoverable_job_type(
+                "INGESTED",
+                "VALIDATING",
+                Some("2026-01-01T00:00:00Z"),
+                Some("VALIDATION"),
+                Some("RUNNING")
+            ),
             Some(JobType::Validator)
         ));
         assert!(matches!(
-            recoverable_job_type("VALIDATED", None),
+            recoverable_job_type(
+                "INGESTED",
+                "VALIDATING",
+                Some("2026-01-01T00:00:00Z"),
+                Some("VALIDATION"),
+                Some("COMPLETED")
+            ),
             Some(JobType::Review)
         ));
-        assert!(recoverable_job_type("FAILED", None).is_none());
-        assert!(recoverable_job_type("EXPORT_READY", None).is_none());
+        assert!(recoverable_job_type("FAILED", "FAILED", None, None, None).is_none());
+        assert!(
+            recoverable_job_type(
+                "INGESTED",
+                "READY_FOR_EXPORT",
+                Some("2026-01-01T00:00:00Z"),
+                Some("EXPORT"),
+                Some("REQUESTED")
+            )
+            .is_none()
+        );
     }
 
     #[test]

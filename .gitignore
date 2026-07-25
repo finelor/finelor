@@ -17,6 +17,8 @@ target/
 uploads/
 exports/
 .finelor/
+.migration-checks/
 experiments/results/
 .env
 **/.DS_Store
+.tmp/

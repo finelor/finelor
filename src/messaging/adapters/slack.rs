@@ -7,6 +7,7 @@ use tracing::{error, info, warn};
 
 use crate::db;
 use crate::ingestion::{self, DocumentArtifactInput, IngestionInput};
+use crate::messaging::commands::build_help_message;
 use crate::messaging::contracts::{
     ActionButton, AgentInboundMessage, GatewayAttachment, GatewayMessageFormat,
     GatewayMessageResponse, MessageSource,
@@ -138,7 +139,13 @@ async fn handle_slack_command(
     event: SlackCommandEvent,
     state: AgentGatewayState,
 ) -> UserCallbackResult<SlackCommandEventResponse> {
-    let text = normalize_slack_command_text(event.command.0.as_str(), event.text.as_deref());
+    let Some(text) = normalize_slack_command_text(event.command.0.as_str(), event.text.as_deref())
+    else {
+        return Ok(SlackCommandEventResponse {
+            content: SlackMessageContent::new().with_text(build_help_message()),
+            response_type: Some(SlackMessageResponseType::Ephemeral),
+        });
+    };
     let source = slack_source(
         event.team_id.0.as_str(),
         event.channel_id.0.as_str(),
@@ -390,7 +397,10 @@ async fn handle_slack_file(source: MessageSource, file: &SlackFile, state: Agent
     .await;
 
     let message = match result {
-        Ok(saved) => format!("Received {}. I will process it now.", saved.short_ref),
+        Ok(outcome) => {
+            let saved = outcome.document_ref();
+            format!("Received {}. I will process it now.", saved.short_ref)
+        }
         Err(err) => {
             error!(error = %err, file_id = %file.id.0, "Slack file ingestion failed");
             "I could not ingest that file. Please try again in a moment.".to_string()
@@ -1007,40 +1017,29 @@ fn escape_slack_link_url(url: &str) -> String {
     url.replace('|', "%7C").replace('>', "%3E")
 }
 
-fn normalize_slack_command_text(command: &str, text: Option<&str>) -> String {
+fn normalize_slack_command_text(command: &str, text: Option<&str>) -> Option<String> {
     let command_name = command
         .trim_start_matches('/')
         .split('@')
         .next()
         .unwrap_or_default()
         .to_ascii_lowercase();
-    let Some(gateway_command) = slack_gateway_command_name(&command_name) else {
-        return "/help".to_string();
-    };
+    let gateway_command = slack_gateway_command_name(&command_name)?;
 
     let trimmed = text.map(str::trim).filter(|value| !value.is_empty());
     let Some(trimmed) = trimmed else {
-        return format!("/{gateway_command}");
+        return Some(format!("/{gateway_command}"));
     };
     if trimmed.starts_with('/') {
-        return trimmed.to_string();
+        return Some(trimmed.to_string());
     }
 
-    format!("/{gateway_command} {trimmed}")
+    Some(format!("/{gateway_command} {trimmed}"))
 }
 
 fn slack_gateway_command_name(word: &str) -> Option<&'static str> {
     Some(match word {
         "help" => "help",
-        "documents" => "documents",
-        "pending" => "pending",
-        "ready" => "ready",
-        "last" => "last",
-        "why" => "why",
-        "review" => "review",
-        "retry" => "retry",
-        "export" => "export",
-        "overview" => "status",
         _ => return None,
     })
 }
@@ -1196,19 +1195,13 @@ mod tests {
 
     #[test]
     fn slack_command_text_matches_gateway_slash_commands() {
-        assert_eq!(normalize_slack_command_text("/help", None), "/help");
-        assert_eq!(normalize_slack_command_text("/overview", None), "/status");
         assert_eq!(
-            normalize_slack_command_text("/review", Some("D000123")),
-            "/review D000123"
-        );
-        assert_eq!(
-            normalize_slack_command_text("/export", Some("D000123")),
-            "/export D000123"
+            normalize_slack_command_text("/help", None),
+            Some("/help".to_string())
         );
         assert_eq!(
             normalize_slack_command_text("/unknown", Some("what needs review?")),
-            "/help"
+            None
         );
     }
 
@@ -1216,21 +1209,16 @@ mod tests {
     fn slack_manifest_lists_short_commands_only() {
         let manifest = std::fs::read_to_string("docs/slack-app-manifest.yaml")
             .expect("slack manifest should be readable");
-        for command in [
-            "/help",
-            "/overview",
-            "/documents",
-            "/pending",
-            "/ready",
-            "/last",
-            "/why",
-            "/review",
-            "/retry",
-            "/export",
-        ] {
-            assert!(manifest.contains(&format!("command: {command}")));
-        }
-        assert!(!manifest.contains("command: /status"));
+        assert!(manifest.contains("command: /help"));
+        assert!(!manifest.contains("command: /overview"));
+        assert!(!manifest.contains("command: /documents"));
+        assert!(!manifest.contains("command: /pending"));
+        assert!(!manifest.contains("command: /ready"));
+        assert!(!manifest.contains("command: /last"));
+        assert!(!manifest.contains("command: /why"));
+        assert!(!manifest.contains("command: /review"));
+        assert!(!manifest.contains("command: /retry"));
+        assert!(!manifest.contains("command: /export"));
         assert!(!manifest.contains("command: /finelor"));
     }
 

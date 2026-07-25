@@ -16,9 +16,10 @@ use uuid::Uuid;
 use crate::{
     config::AppConfig,
     db::{self, ApiKey, DbPool},
+    document_state::fetch_document_state_by_short_ref,
     ingestion::{self, DocumentArtifactInput, IngestionInput},
     messaging::{commands::describe_document_why, intents::normalize_short_ref},
-    query::{document_ref_by_short_ref, document_status_counts},
+    query::{document_ref_by_short_ref, grouped_document_status_counts},
     queue::QueueProducer,
     web::events::AppEventBus,
 };
@@ -105,7 +106,7 @@ fn bad_request(message: &str) -> (StatusCode, Json<serde_json::Value>) {
 pub struct CreateDocumentResponse {
     pub document_id: i64,
     pub short_ref: String,
-    pub status: String,
+    pub status: DocumentStatusSummary,
 }
 
 #[derive(Debug, Serialize)]
@@ -119,7 +120,7 @@ pub struct DocumentListResponse {
 #[derive(Debug, Serialize)]
 pub struct DocumentListItem {
     pub short_ref: String,
-    pub status: String,
+    pub status: DocumentStatusSummary,
     pub supplier_name: Option<String>,
     pub transaction_date: Option<String>,
     pub total_amount: Option<String>,
@@ -133,7 +134,7 @@ pub struct DocumentListItem {
 #[derive(Debug, Serialize)]
 pub struct DocumentDetailsResponse {
     pub short_ref: String,
-    pub status: String,
+    pub status: Option<DocumentStatusResponse>,
     pub filename: Option<String>,
     pub mime_type: Option<String>,
     pub supplier_name: Option<String>,
@@ -166,12 +167,32 @@ pub struct AccountingRowResponse {
 }
 
 #[derive(Debug, Serialize)]
-pub struct DocumentStatusResponse {
+pub struct DomainCountSummary {
+    pub processing: i64,
+    pub ingested: i64,
+    pub failed: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AccountingCountSummary {
     pub processing: i64,
     pub pending_review: i64,
-    pub export_ready: i64,
+    pub ready_for_export: i64,
     pub exported: i64,
     pub failed: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DocumentStatusCountsResponse {
+    pub documents_total: i64,
+    pub intake: DomainCountSummary,
+    pub accounting: AccountingCountSummary,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DocumentStatusSummary {
+    pub intake: DomainStatusSummary,
+    pub accounting: AccountingStatusSummary,
 }
 
 #[derive(Debug, Serialize)]
@@ -180,28 +201,115 @@ pub struct DocumentExplainResponse {
     pub explanation: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct DomainStatusDetail {
+    pub status: Option<String>,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub failure_reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AccountingStatusDetail {
+    pub status: Option<String>,
+    pub requested_at: Option<String>,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub failure_reason: Option<String>,
+    pub review_reason: Option<String>,
+    pub export_batch_id: Option<i64>,
+    pub latest_run_kind: Option<String>,
+    pub latest_run_status: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DomainStatusSummary {
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AccountingStatusSummary {
+    pub status: Option<String>,
+    pub review_reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DocumentStatusResponse {
+    pub intake: DomainStatusDetail,
+    pub accounting: AccountingStatusDetail,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct DocumentListQuery {
     pub limit: Option<i64>,
     pub offset: Option<i64>,
-    pub status: Option<String>,
+    pub intake_status: Option<String>,
+    pub accounting_status: Option<String>,
     pub month: Option<String>,
     pub search: Option<String>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct ApiDocumentListRow {
+    short_ref: String,
+    received_date: Option<String>,
+    mime_type: Option<String>,
+    original_path: Option<String>,
+    supplier_name: Option<String>,
+    transaction_date: Option<String>,
+    total_amount: Option<String>,
+    ai_confidence: Option<f64>,
+    model_used: Option<String>,
+    intake_status: Option<String>,
+    accounting_status: Option<String>,
+    accounting_review_reason: Option<String>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct ApiDocumentDetailsRow {
+    id: i64,
+    short_ref: String,
+    filename: Option<String>,
+    mime_type: Option<String>,
+    original_path: Option<String>,
+    supplier_name: Option<String>,
+    transaction_date: Option<String>,
+    total_amount: Option<String>,
+    vat_amount: Option<String>,
+    subtotal_amount: Option<String>,
+    document_type: Option<String>,
+    assigned_account_code: Option<String>,
+    ai_confidence: Option<f64>,
+    model_used: Option<String>,
+    account_name: Option<String>,
+    net_amount: Option<String>,
+    review_confidence: Option<f64>,
+    review_decision_type: Option<String>,
+    review_reason: Option<String>,
+    validation_errors: Option<serde_json::Value>,
 }
 
 async fn document_status(
     _auth: ApiKeyAuth,
     State(state): State<PublicApiState>,
-) -> Result<Json<DocumentStatusResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let counts = document_status_counts(&state.pool)
+) -> Result<Json<DocumentStatusCountsResponse>, (StatusCode, Json<serde_json::Value>)> {
+    let counts = grouped_document_status_counts(&state.pool)
         .await
         .map_err(|_| server_error("Document status query failed"))?;
-    Ok(Json(DocumentStatusResponse {
-        processing: counts.processing_count,
-        pending_review: counts.pending_count,
-        export_ready: counts.ready_count,
-        exported: counts.exported_count,
-        failed: counts.failed_count,
+    Ok(Json(DocumentStatusCountsResponse {
+        documents_total: counts.documents_total,
+        intake: DomainCountSummary {
+            processing: counts.intake_processing_count,
+            ingested: counts.intake_ingested_count,
+            failed: counts.intake_failed_count,
+        },
+        accounting: AccountingCountSummary {
+            processing: counts.accounting_processing_count,
+            pending_review: counts.accounting_pending_review_count,
+            ready_for_export: counts.accounting_ready_for_export_count,
+            exported: counts.accounting_exported_count,
+            failed: counts.accounting_failed_count,
+        },
     }))
 }
 
@@ -322,11 +430,20 @@ async fn create_document(
     )
     .await
     .map_err(|_| server_error("Document ingestion failed"))?;
+    let saved = result.document_ref();
 
     Ok(Json(CreateDocumentResponse {
-        document_id: result.id,
-        short_ref: result.short_ref,
-        status: "RECEIVED".to_string(),
+        document_id: saved.id,
+        short_ref: saved.short_ref.clone(),
+        status: DocumentStatusSummary {
+            intake: DomainStatusSummary {
+                status: Some("RECEIVED".to_string()),
+            },
+            accounting: AccountingStatusSummary {
+                status: Some("NOT_REQUESTED".to_string()),
+                review_reason: None,
+            },
+        },
     }))
 }
 
@@ -337,40 +454,15 @@ async fn list_documents(
 ) -> Result<Json<DocumentListResponse>, (StatusCode, Json<serde_json::Value>)> {
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
     let offset = query.offset.unwrap_or(0).max(0);
-    let status = clean_filter(query.status);
+    let intake_status = clean_filter(query.intake_status);
+    let accounting_status = clean_filter(query.accounting_status);
     let month = clean_filter(query.month);
     let search = clean_filter(query.search);
 
-    let total: i64 = sqlx::query_scalar(
-        r#"
-        SELECT COUNT(*)
-        FROM documents d
-        WHERE ($1 IS NULL OR d.status = $1)
-          AND ($2 IS NULL OR strftime('%Y-%m', d.received_at) = $2)
-          AND (
-            $3 IS NULL
-            OR LOWER(d.short_ref) LIKE ('%' || LOWER($3) || '%')
-            OR EXISTS (
-              SELECT 1 FROM extracted_fields ef
-              WHERE ef.document_id = d.id
-                AND ef.field_type = 'supplier_name'
-                AND LOWER(ef.parsed_value) LIKE ('%' || LOWER($3) || '%')
-            )
-          )
-        "#,
-    )
-    .bind(&status)
-    .bind(&month)
-    .bind(&search)
-    .fetch_one(&state.pool)
-    .await
-    .map_err(|_| server_error("Document query failed"))?;
-
-    let rows = sqlx::query(
+    let rows = sqlx::query_as::<_, ApiDocumentListRow>(
         r#"
         SELECT
           d.short_ref,
-          d.status,
           date(d.received_at) AS received_date,
           d.mime_type,
           d.original_path,
@@ -403,34 +495,48 @@ async fn list_documents(
             WHERE ad.document_id = d.id
             ORDER BY ad.created_at DESC
             LIMIT 1
-          ) AS model_used
+          ) AS model_used,
+          dis.status AS intake_status,
+          das.status AS accounting_status,
+          das.review_reason AS accounting_review_reason
         FROM documents d
-        WHERE ($1 IS NULL OR d.status = $1)
-          AND ($2 IS NULL OR strftime('%Y-%m', d.received_at) = $2)
+        LEFT JOIN document_intake_state dis ON dis.document_id = d.id
+        LEFT JOIN document_accounting_state das ON das.document_id = d.id
+        WHERE ($1 IS NULL OR strftime('%Y-%m', d.received_at) = $1)
           AND (
-            $3 IS NULL
-            OR LOWER(d.short_ref) LIKE ('%' || LOWER($3) || '%')
+            $2 IS NULL
+            OR LOWER(d.short_ref) LIKE ('%' || LOWER($2) || '%')
             OR EXISTS (
               SELECT 1 FROM extracted_fields ef
               WHERE ef.document_id = d.id
                 AND ef.field_type = 'supplier_name'
-                AND LOWER(ef.parsed_value) LIKE ('%' || LOWER($3) || '%')
+                AND LOWER(ef.parsed_value) LIKE ('%' || LOWER($2) || '%')
             )
           )
+          AND ($3 IS NULL OR dis.status = $3)
+          AND ($4 IS NULL OR das.status = $4)
         ORDER BY d.received_at DESC
-        LIMIT $4 OFFSET $5
         "#,
     )
-    .bind(&status)
     .bind(&month)
     .bind(&search)
-    .bind(limit)
-    .bind(offset)
+    .bind(&intake_status)
+    .bind(&accounting_status)
     .fetch_all(&state.pool)
     .await
     .map_err(|_| server_error("Document query failed"))?;
 
-    let items = rows.into_iter().map(document_list_item_from_row).collect();
+    let mut items: Vec<DocumentListItem> =
+        rows.into_iter().map(document_list_item_from_row).collect();
+    let total = items.len() as i64;
+    let start = offset as usize;
+    let end = start.saturating_add(limit as usize).min(items.len());
+    let items = if start >= items.len() {
+        Vec::new()
+    } else {
+        items.drain(start..end).collect()
+    };
+
     Ok(Json(DocumentListResponse {
         items,
         limit,
@@ -447,11 +553,15 @@ async fn get_document(
     let row = document_details_row(&state.pool, &short_ref)
         .await?
         .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({"error": "not_found"}))))?;
-    let document_id: i64 = row
-        .try_get("id")
-        .map_err(|_| server_error("Document query failed"))?;
-    let accounting_rows = accounting_rows(&state.pool, document_id).await?;
-    Ok(Json(document_details_from_row(row, accounting_rows)))
+    let accounting_rows = accounting_rows(&state.pool, row.id).await?;
+    let document_state = fetch_document_state_by_short_ref(&state.pool, short_ref.trim())
+        .await
+        .map_err(|_| server_error("Document status query failed"))?;
+    Ok(Json(document_details_from_row(
+        row,
+        accounting_rows,
+        document_state,
+    )))
 }
 
 async fn explain_document(
@@ -579,21 +689,29 @@ fn download_url(short_ref: &str, has_download: bool) -> Option<String> {
     has_download.then(|| format!("/api/v1/documents/{short_ref}/file"))
 }
 
-fn document_list_item_from_row(row: sqlx::sqlite::SqliteRow) -> DocumentListItem {
-    let short_ref: String = row.try_get("short_ref").unwrap_or_default();
-    let mime_type: Option<String> = row.try_get("mime_type").ok();
-    let original_path: Option<String> = row.try_get("original_path").ok();
+fn document_list_item_from_row(row: ApiDocumentListRow) -> DocumentListItem {
+    let short_ref = row.short_ref;
+    let mime_type = row.mime_type;
+    let original_path = row.original_path;
     let has_download = has_download(mime_type.as_deref(), original_path.as_deref());
     DocumentListItem {
         download_url: download_url(&short_ref, has_download),
         short_ref,
-        status: row.try_get("status").unwrap_or_default(),
-        supplier_name: row.try_get("supplier_name").ok(),
-        transaction_date: row.try_get("transaction_date").ok(),
-        total_amount: row.try_get("total_amount").ok(),
-        received_date: row.try_get("received_date").ok(),
-        ai_confidence: row.try_get("ai_confidence").ok(),
-        model_used: row.try_get("model_used").ok(),
+        status: DocumentStatusSummary {
+            intake: DomainStatusSummary {
+                status: row.intake_status,
+            },
+            accounting: AccountingStatusSummary {
+                status: row.accounting_status,
+                review_reason: row.accounting_review_reason,
+            },
+        },
+        supplier_name: row.supplier_name,
+        transaction_date: row.transaction_date,
+        total_amount: row.total_amount,
+        received_date: row.received_date,
+        ai_confidence: row.ai_confidence,
+        model_used: row.model_used,
         has_download,
     }
 }
@@ -601,11 +719,11 @@ fn document_list_item_from_row(row: sqlx::sqlite::SqliteRow) -> DocumentListItem
 async fn document_details_row(
     pool: &DbPool,
     short_ref: &str,
-) -> Result<Option<sqlx::sqlite::SqliteRow>, (StatusCode, Json<serde_json::Value>)> {
-    sqlx::query(
+) -> Result<Option<ApiDocumentDetailsRow>, (StatusCode, Json<serde_json::Value>)> {
+    sqlx::query_as(
         r#"
         SELECT
-          d.id, d.short_ref, d.status, d.mime_type, d.original_path,
+          d.id, d.short_ref, d.mime_type, d.original_path,
           COALESCE(
             (
               SELECT NULLIF(TRIM(da.original_filename), '')
@@ -748,34 +866,53 @@ async fn accounting_rows(
 }
 
 fn document_details_from_row(
-    row: sqlx::sqlite::SqliteRow,
+    row: ApiDocumentDetailsRow,
     accounting_rows: Vec<AccountingRowResponse>,
+    document_state: Option<crate::document_state::DocumentStateSnapshot>,
 ) -> DocumentDetailsResponse {
-    let short_ref: String = row.try_get("short_ref").unwrap_or_default();
-    let mime_type: Option<String> = row.try_get("mime_type").ok();
-    let original_path: Option<String> = row.try_get("original_path").ok();
+    let short_ref = row.short_ref;
+    let mime_type = row.mime_type;
+    let original_path = row.original_path;
     let has_download = has_download(mime_type.as_deref(), original_path.as_deref());
     DocumentDetailsResponse {
         download_url: download_url(&short_ref, has_download),
         short_ref,
-        status: row.try_get("status").unwrap_or_default(),
-        filename: row.try_get("filename").ok(),
+        status: document_state.map(|snapshot| DocumentStatusResponse {
+            intake: DomainStatusDetail {
+                status: snapshot.intake_status,
+                started_at: snapshot.intake_started_at,
+                completed_at: snapshot.intake_completed_at,
+                failure_reason: snapshot.intake_failure_reason,
+            },
+            accounting: AccountingStatusDetail {
+                status: snapshot.accounting_status,
+                requested_at: snapshot.accounting_requested_at,
+                started_at: snapshot.accounting_started_at,
+                completed_at: snapshot.accounting_completed_at,
+                failure_reason: snapshot.accounting_failure_reason,
+                review_reason: snapshot.accounting_review_reason,
+                export_batch_id: snapshot.accounting_export_batch_id,
+                latest_run_kind: snapshot.latest_accounting_run_kind,
+                latest_run_status: snapshot.latest_accounting_run_status,
+            },
+        }),
+        filename: row.filename,
         mime_type,
-        supplier_name: row.try_get("supplier_name").ok(),
-        transaction_date: row.try_get("transaction_date").ok(),
-        total_amount: row.try_get("total_amount").ok(),
-        vat_amount: row.try_get("vat_amount").ok(),
-        subtotal_amount: row.try_get("subtotal_amount").ok(),
-        net_amount: row.try_get("net_amount").ok(),
-        assigned_account_code: row.try_get("assigned_account_code").ok(),
-        account_name: row.try_get("account_name").ok(),
-        ai_confidence: row.try_get("ai_confidence").ok(),
-        model_used: row.try_get("model_used").ok(),
-        document_type: row.try_get("document_type").ok(),
-        review_confidence: row.try_get("review_confidence").ok(),
-        review_decision_type: row.try_get("review_decision_type").ok(),
-        review_reason: row.try_get("review_reason").ok(),
-        validation_errors: row.try_get("validation_errors").ok(),
+        supplier_name: row.supplier_name,
+        transaction_date: row.transaction_date,
+        total_amount: row.total_amount,
+        vat_amount: row.vat_amount,
+        subtotal_amount: row.subtotal_amount,
+        net_amount: row.net_amount,
+        assigned_account_code: row.assigned_account_code,
+        account_name: row.account_name,
+        ai_confidence: row.ai_confidence,
+        model_used: row.model_used,
+        document_type: row.document_type,
+        review_confidence: row.review_confidence,
+        review_decision_type: row.review_decision_type,
+        review_reason: row.review_reason,
+        validation_errors: row.validation_errors,
         accounting_rows,
         has_download,
     }

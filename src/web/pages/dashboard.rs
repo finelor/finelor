@@ -4,7 +4,7 @@ use crate::web::components::ui::{
     GridSpan, HiddenPlaceholder, LoadingCard, Metric, PreviewRows, Stack, TextInput, TextLink,
     Tone,
 };
-use crate::web::server::auth::{
+use crate::web::server::dashboard::{
     CompleteCompanyOnboarding, DashboardSummary, get_dashboard_summary,
 };
 use icondata::{LuCircleCheck, LuShieldCheck};

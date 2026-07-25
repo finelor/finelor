@@ -5,35 +5,28 @@ mod common;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use common::TestDocumentStatePreset as Preset;
 use finelor::agents::{
-    AccountantAgent, AccountantInput, Agent, AgentContext, DocumentStatus, FieldLoadMode,
-    IntakeAgent, IntakeInput, ValidatorAgent, ValidatorInput, VisionAgent, VisionInput,
+    AccountantAgent, AccountantInput, Agent, AgentContext, FieldLoadMode, IntakeAgent, IntakeInput,
+    ValidatorAgent, ValidatorInput, VisionAgent, VisionInput,
 };
-use finelor::ingestion::{DocumentArtifactInput, IngestionInput, ingest_document};
+use finelor::ingestion::{
+    DocumentArtifactInput, IngestionInput, SaveDocumentOutcome, ingest_document,
+};
 use finelor::orchestration::recover_incomplete_jobs;
 use finelor::queue::{JobType, QueueProducer};
 use finelor::web::events::AppEventBus;
 use serde_json::json;
-use sqlx::{Row, SqlitePool};
+use sqlx::SqlitePool;
 
 fn context(pool: SqlitePool) -> AgentContext {
     AgentContext::new(pool, common::test_config(), AppEventBus::new(16))
 }
 
-async fn create_document(pool: &SqlitePool, status: &str) -> i64 {
-    let hash = format!("pipeline-test-{}", uuid::Uuid::new_v4());
-    sqlx::query_scalar::<_, i64>(
-        r#"
-        INSERT INTO documents (filename, status, file_hash, original_path, mime_type)
-        VALUES ('pipeline-test.png', $1, $2, '', 'image/png')
-        RETURNING id
-        "#,
-    )
-    .bind(status)
-    .bind(hash)
-    .fetch_one(pool)
-    .await
-    .expect("insert document")
+async fn create_document(pool: &SqlitePool, preset: Preset) -> i64 {
+    common::create_document_with_state_preset(pool, preset, Some(""), "image/png")
+        .await
+        .0
 }
 
 async fn insert_field(pool: &SqlitePool, document_id: i64, field_type: &str, value: &str) {
@@ -117,40 +110,31 @@ async fn recovery_queues_expected_jobs_from_incomplete_documents() {
     let queue = common::test_queue();
     let producer = QueueProducer::new(queue.clone());
 
-    for (status, priority, accounting_requested) in [
-        ("RECEIVED", "NORMAL", false),
-        ("PROCESSING_VISION", "HIGH", false),
-        ("VISION_COMPLETE", "LOW", false),
-        ("VISION_COMPLETE", "HIGH", true),
-        ("PROCESSING_ACCOUNTANT", "HIGH", false),
-        ("ACCOUNTANT_REVIEWED", "NORMAL", false),
-        ("PROCESSING_VALIDATOR", "NORMAL", false),
-        ("VALIDATED", "NORMAL", false),
-        ("FAILED", "HIGH", false),
-        ("EXPORT_READY", "HIGH", false),
+    for (preset, priority) in [
+        (Preset::IntakeReceived, "NORMAL"),
+        (Preset::IntakeProcessing, "HIGH"),
+        (Preset::IntakeIngested, "LOW"),
+        (Preset::AccountingRequested, "HIGH"),
+        (Preset::AccountingRunning, "HIGH"),
+        (Preset::AccountingCompleted, "NORMAL"),
+        (Preset::ValidationRunning, "NORMAL"),
+        (Preset::ValidationCompleted, "NORMAL"),
+        (Preset::IntakeFailed, "HIGH"),
+        (Preset::ReadyForExport, "HIGH"),
     ] {
-        let id = create_document(&pool, status).await;
+        let id = create_document(&pool, preset).await;
         sqlx::query("UPDATE documents SET priority = $1 WHERE id = $2")
             .bind(priority)
             .bind(id)
             .execute(&pool)
             .await
             .expect("update priority");
-        if accounting_requested {
-            sqlx::query(
-                "UPDATE documents SET accounting_requested_at = '2026-01-01T00:00:00Z' WHERE id = $1",
-            )
-            .bind(id)
-            .execute(&pool)
-            .await
-            .expect("mark requested");
-        }
     }
 
     let recovered = recover_incomplete_jobs(&pool, &producer)
         .await
         .expect("recover jobs");
-    assert_eq!(recovered, 7);
+    assert_eq!(recovered, 6);
 
     let jobs = common::drain_jobs(&queue, 20).await;
     let job_types = jobs
@@ -176,7 +160,7 @@ async fn recovery_queues_expected_jobs_from_incomplete_documents() {
             .iter()
             .filter(|job_type| matches!(job_type, JobType::Validator))
             .count(),
-        2
+        1
     );
     assert_eq!(
         job_types
@@ -197,7 +181,7 @@ async fn intake_updates_status_records_event_and_enqueues_vision_once() {
     let pool = common::in_memory_pool().await;
     let queue = common::test_queue();
     let producer = QueueProducer::new(queue.clone());
-    let document_id = create_document(&pool, "RECEIVED").await;
+    let document_id = create_document(&pool, Preset::IntakeReceived).await;
 
     let agent = IntakeAgent::new(context(pool.clone()), producer.clone());
     let output = agent
@@ -211,12 +195,8 @@ async fn intake_updates_status_records_event_and_enqueues_vision_once() {
         .expect("intake process");
 
     assert!(output.queued_for_vision);
-    let status: String = sqlx::query_scalar("SELECT status FROM documents WHERE id = $1")
-        .bind(document_id)
-        .fetch_one(&pool)
-        .await
-        .expect("status");
-    assert_eq!(status, DocumentStatus::ProcessingVision.as_str());
+    let state = common::current_document_state(&pool, document_id).await;
+    assert_eq!(state.intake_status.as_deref(), Some("PROCESSING"));
 
     let jobs = common::drain_jobs(&queue, 10).await;
     assert_eq!(jobs.len(), 1);
@@ -270,12 +250,20 @@ async fn duplicate_ingestion_returns_existing_document_without_requeueing() {
     let first = ingest_document(&pool, &config, &producer, None, input("first"))
         .await
         .expect("first ingestion");
+    let first = match first {
+        SaveDocumentOutcome::Created(saved) => saved,
+        SaveDocumentOutcome::Duplicate(_) => panic!("first ingestion unexpectedly deduplicated"),
+    };
     let first_jobs = common::drain_jobs(&queue, 10).await;
     assert_eq!(first_jobs.len(), 1);
 
     let second = ingest_document(&pool, &config, &producer, None, input("second"))
         .await
         .expect("duplicate ingestion");
+    let second = match second {
+        SaveDocumentOutcome::Duplicate(saved) => saved,
+        SaveDocumentOutcome::Created(_) => panic!("duplicate ingestion unexpectedly created"),
+    };
     assert_eq!(second.id, first.id);
     assert_eq!(second.short_ref, first.short_ref);
     assert!(common::drain_jobs(&queue, 10).await.is_empty());
@@ -301,7 +289,7 @@ async fn duplicate_ingestion_returns_existing_document_without_requeueing() {
 #[tokio::test]
 async fn validator_writes_results_confidence_status_and_events() {
     let pool = common::in_memory_pool().await;
-    let document_id = create_document(&pool, "ACCOUNTANT_REVIEWED").await;
+    let document_id = create_document(&pool, Preset::AccountingCompleted).await;
     seed_validation_context(&pool, document_id).await;
 
     let agent = ValidatorAgent::new(context(pool.clone()), FieldLoadMode::OriginalOnly);
@@ -310,12 +298,8 @@ async fn validator_writes_results_confidence_status_and_events() {
         .await
         .expect("validator process");
 
-    let status: String = sqlx::query_scalar("SELECT status FROM documents WHERE id = $1")
-        .bind(document_id)
-        .fetch_one(&pool)
-        .await
-        .expect("status");
-    assert_eq!(status, DocumentStatus::Validated.as_str());
+    let state = common::current_document_state(&pool, document_id).await;
+    assert_eq!(state.accounting_status.as_deref(), Some("VALIDATING"));
 
     let validation_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM validation_results WHERE document_id = $1 AND overall_status IS NOT NULL",
@@ -349,7 +333,7 @@ async fn vision_agent_uses_fake_inference_and_stops_after_vision() {
     let pool = common::in_memory_pool().await;
     let queue = common::test_queue();
     let producer = QueueProducer::new(queue.clone());
-    let document_id = create_document(&pool, "PROCESSING_VISION").await;
+    let document_id = create_document(&pool, Preset::IntakeProcessing).await;
     let image_path = write_test_png();
     sqlx::query("UPDATE documents SET original_path = $1 WHERE id = $2")
         .bind(image_path.to_string_lossy().to_string())
@@ -369,12 +353,9 @@ async fn vision_agent_uses_fake_inference_and_stops_after_vision() {
         .await
         .expect("vision process");
 
-    let status: String = sqlx::query_scalar("SELECT status FROM documents WHERE id = $1")
-        .bind(document_id)
-        .fetch_one(&pool)
-        .await
-        .expect("status");
-    assert_eq!(status, DocumentStatus::VisionComplete.as_str());
+    let state = common::current_document_state(&pool, document_id).await;
+    assert_eq!(state.intake_status.as_deref(), Some("INGESTED"));
+    assert_eq!(state.accounting_status.as_deref(), Some("NOT_REQUESTED"));
 
     let supplier: Option<String> = sqlx::query_scalar(
         "SELECT parsed_value FROM extracted_fields WHERE document_id = $1 AND field_type = 'supplier_name' LIMIT 1",
@@ -388,19 +369,20 @@ async fn vision_agent_uses_fake_inference_and_stops_after_vision() {
     let jobs = common::drain_jobs(&queue, 10).await;
     assert!(jobs.is_empty());
 
-    let accounting_requested_at: Option<String> =
-        sqlx::query_scalar("SELECT accounting_requested_at FROM documents WHERE id = $1")
-            .bind(document_id)
-            .fetch_one(&pool)
-            .await
-            .expect("accounting request state");
+    let accounting_requested_at: Option<String> = sqlx::query_scalar(
+        "SELECT requested_at FROM document_accounting_state WHERE document_id = $1",
+    )
+    .bind(document_id)
+    .fetch_one(&pool)
+    .await
+    .expect("accounting request state");
     assert!(accounting_requested_at.is_none());
 }
 
 #[tokio::test]
 async fn accountant_agent_uses_fake_inference_and_writes_accounting_rows() {
     let pool = common::in_memory_pool().await;
-    let document_id = create_document(&pool, "VISION_COMPLETE").await;
+    let document_id = create_document(&pool, Preset::IntakeIngested).await;
     insert_field(&pool, document_id, "supplier_name", "Acme AB").await;
     insert_field(&pool, document_id, "transaction_date", "2026-05-01").await;
     insert_field(&pool, document_id, "invoice_number", "INV-1").await;
@@ -421,12 +403,16 @@ async fn accountant_agent_uses_fake_inference_and_writes_accounting_rows() {
         .await
         .expect("accountant process");
 
-    let status: String = sqlx::query_scalar("SELECT status FROM documents WHERE id = $1")
-        .bind(document_id)
-        .fetch_one(&pool)
-        .await
-        .expect("status");
-    assert_eq!(status, DocumentStatus::AccountantReviewed.as_str());
+    let state = common::current_document_state(&pool, document_id).await;
+    assert_eq!(state.accounting_status.as_deref(), Some("ACCOUNTING"));
+    assert_eq!(
+        state.latest_accounting_run_kind.as_deref(),
+        Some("ACCOUNTING")
+    );
+    assert_eq!(
+        state.latest_accounting_run_status.as_deref(),
+        Some("COMPLETED")
+    );
 
     let invoice_id: i64 = sqlx::query_scalar("SELECT id FROM invoices WHERE document_id = $1")
         .bind(document_id)
@@ -454,7 +440,7 @@ async fn accountant_agent_uses_fake_inference_and_writes_accounting_rows() {
 async fn inference_error_returns_agent_error_without_external_service() {
     let pool = common::in_memory_pool().await;
     let queue = common::test_queue();
-    let document_id = create_document(&pool, "PROCESSING_VISION").await;
+    let document_id = create_document(&pool, Preset::IntakeProcessing).await;
     let image_path = write_test_png();
 
     let fake = common::FakeInferenceProvider::default();
@@ -474,7 +460,7 @@ async fn inference_error_returns_agent_error_without_external_service() {
 #[tokio::test]
 async fn export_agent_marks_ready_documents_exported() {
     let pool = common::in_memory_pool().await;
-    let document_id = create_document(&pool, "EXPORT_READY").await;
+    let document_id = create_document(&pool, Preset::ReadyForExport).await;
     seed_validation_context(&pool, document_id).await;
     sqlx::query("INSERT INTO invoices (document_id, supplier_name, invoice_date, total_amount, vat_amount, status) VALUES ($1, 'Acme AB', '2026-05-01', 125.0, 25.0, 'PENDING_REVIEW')")
         .bind(document_id)
@@ -500,13 +486,8 @@ async fn export_agent_marks_ready_documents_exported() {
         .await
         .expect("export process");
 
-    let row = sqlx::query("SELECT status, exported_in_batch FROM documents WHERE id = $1")
-        .bind(document_id)
-        .fetch_one(&pool)
-        .await
-        .expect("document export row");
-    let status: String = row.get("status");
-    let batch_id: Option<i64> = row.try_get("exported_in_batch").ok();
-    assert_eq!(status, DocumentStatus::Exported.as_str());
+    let state = common::current_document_state(&pool, document_id).await;
+    let batch_id = state.accounting_export_batch_id;
+    assert_eq!(state.accounting_status.as_deref(), Some("EXPORTED"));
     assert!(batch_id.is_some());
 }

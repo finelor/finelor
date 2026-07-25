@@ -3,7 +3,7 @@ use crate::web::components::ui::{
     HiddenPlaceholder, LoadingCard, Metric, MonthInput, PreviewRows, SelectInput, Stack, TextInput,
     Tone, TransactionRow, TransactionsHeader,
 };
-use crate::web::server::auth::{TransactionsResponse, get_document_list};
+use crate::web::server::dashboard::{DocumentListFilters, TransactionsResponse, get_document_list};
 use icondata::{LuCircleCheck, LuShieldCheck};
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -16,32 +16,45 @@ enum TransactionsPageState {
 #[component]
 pub fn Transactions() -> impl IntoView {
     let search_query = RwSignal::new(String::new());
-    let status_filter = RwSignal::new(String::new());
+    let intake_status_filter = RwSignal::new(String::new());
+    let accounting_status_filter = RwSignal::new(String::new());
     let month_filter = RwSignal::new(String::new());
 
     let page_data = Resource::new(
-        move || (search_query.get(), status_filter.get(), month_filter.get()),
-        |(search, status, month)| async move {
+        move || {
+            (
+                search_query.get(),
+                intake_status_filter.get(),
+                accounting_status_filter.get(),
+                month_filter.get(),
+            )
+        },
+        |(search, intake_status, accounting_status, month)| async move {
             Ok::<_, ServerFnError>(TransactionsPageState::Loaded(
-                get_document_list(
-                    if month.trim().is_empty() {
+                get_document_list(DocumentListFilters {
+                    month: if month.trim().is_empty() {
                         None
                     } else {
                         Some(month)
                     },
-                    if status.trim().is_empty() {
+                    intake_status: if intake_status.trim().is_empty() {
                         None
                     } else {
-                        Some(status)
+                        Some(intake_status)
                     },
-                    if search.trim().is_empty() {
+                    accounting_status: if accounting_status.trim().is_empty() {
+                        None
+                    } else {
+                        Some(accounting_status)
+                    },
+                    search: if search.trim().is_empty() {
                         None
                     } else {
                         Some(search)
                     },
-                    Some(100),
-                    Some(0),
-                )
+                    limit: Some(100),
+                    offset: Some(0),
+                })
                 .await?,
             ))
         },
@@ -67,7 +80,8 @@ pub fn Transactions() -> impl IntoView {
                                             title=doc.supplier_name.clone().unwrap_or_else(|| "Unknown supplier".to_string())
                                             reference=doc.short_ref.clone()
                                             amount=doc.total_amount.clone().unwrap_or_else(|| "-".to_string())
-                                            status=doc.status.clone()
+                                            intake_status=doc.status.intake.status.clone().unwrap_or_default()
+                                            accounting_status=doc.status.accounting.status.clone().unwrap_or_default()
                                             confidence=doc.ai_confidence.map(|c| format!("{:.0}%", c * 100.0)).unwrap_or_else(|| "-".to_string())
                                         />
                                     }
@@ -99,12 +113,30 @@ pub fn Transactions() -> impl IntoView {
                                         <FormField label="Month">
                                             <MonthInput value=month_filter />
                                         </FormField>
-                                        <FormField label="Status">
-                                            <SelectInput value=status_filter>
-                                                <option value="">"All statuses"</option>
-                                                <option value="PENDING_HUMAN_REVIEW">"Pending review"</option>
-                                                <option value="EXPORT_READY">"Export ready"</option>
+                                        <FormField label="Review">
+                                            <div class="text-sm text-base-content/60">
+                                                "Review and export are part of accounting state."
+                                            </div>
+                                        </FormField>
+                                        <FormField label="Accounting">
+                                            <SelectInput value=accounting_status_filter>
+                                                <option value="">"All accounting states"</option>
+                                                <option value="REQUESTED">"Requested"</option>
+                                                <option value="ACCOUNTING">"Accounting"</option>
+                                                <option value="VALIDATING">"Validating"</option>
+                                                <option value="PENDING_REVIEW">"Pending review"</option>
+                                                <option value="READY_FOR_EXPORT">"Ready for export"</option>
+                                                <option value="EXPORTING">"Exporting"</option>
                                                 <option value="EXPORTED">"Exported"</option>
+                                                <option value="FAILED">"Failed"</option>
+                                            </SelectInput>
+                                        </FormField>
+                                        <FormField label="Intake">
+                                            <SelectInput value=intake_status_filter>
+                                                <option value="">"All intake states"</option>
+                                                <option value="RECEIVED">"Received"</option>
+                                                <option value="PROCESSING">"Processing"</option>
+                                                <option value="INGESTED">"Ingested"</option>
                                                 <option value="FAILED">"Failed"</option>
                                             </SelectInput>
                                         </FormField>

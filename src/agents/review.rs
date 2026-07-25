@@ -11,9 +11,10 @@ use sqlx::SqliteConnection;
 use tracing::info;
 
 use crate::agents::export::{ExportAgent, summarize_block_reasons};
-use crate::agents::{Agent, AgentContext, DocumentStatus, FieldLoadMode, db_helpers};
+use crate::agents::{Agent, AgentContext, FieldLoadMode, db_helpers};
 use crate::confidence::{ReviewAction, ReviewThresholds};
 use crate::db::DbPool;
+use crate::document_state;
 use crate::error::{AppError, AppResult};
 use crate::queue::{Job, JobType, QueueProducer};
 
@@ -333,17 +334,8 @@ impl ReviewAgent {
         document_id: i64,
         reason: &str,
     ) -> AppResult<ReviewDecision> {
-        // Update document status to Failed
-        sqlx::query(
-            r#"
-            UPDATE documents
-            SET status = 'FAILED', updated_at = CURRENT_TIMESTAMP
-            WHERE id = $1
-            "#,
-        )
-        .bind(document_id)
-        .execute(&self.context.pool)
-        .await?;
+        document_state::mark_accounting_failed(&self.context.pool, document_id, Some(reason))
+            .await?;
 
         // Store review decision
         sqlx::query(
@@ -852,15 +844,11 @@ impl Agent for ReviewAgent {
                         "Escalating high-confidence document to human review because export readiness failed"
                     );
 
-                    sqlx::query(
-                        r#"
-                        UPDATE documents
-                        SET status = 'PENDING_HUMAN_REVIEW', updated_at = CURRENT_TIMESTAMP
-                        WHERE id = $1
-                        "#,
+                    document_state::request_human_review(
+                        &self.context.pool,
+                        input.document_id,
+                        Some(&review_reason),
                     )
-                    .bind(input.document_id)
-                    .execute(&self.context.pool)
                     .await?;
 
                     sqlx::query(
@@ -902,19 +890,16 @@ impl Agent for ReviewAgent {
                     });
                 }
 
-                self.context
-                    .update_document_status(input.document_id, DocumentStatus::ExportReady)
+                document_state::complete_review(&self.context.pool, input.document_id, None)
                     .await?;
-                sqlx::query(
-                    r#"
-                    UPDATE documents
-                    SET review_completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = $1
-                    "#,
-                )
-                .bind(input.document_id)
-                .execute(&self.context.pool)
-                .await?;
+                document_state::mark_export_ready(&self.context.pool, input.document_id).await?;
+                self.context
+                    .record_document_event(
+                        input.document_id,
+                        "STATUS_CHANGED",
+                        serde_json::json!({ "accounting_status": "READY_FOR_EXPORT" }),
+                    )
+                    .await?;
 
                 // Update review decision
                 sqlx::query(
@@ -952,16 +937,8 @@ impl Agent for ReviewAgent {
                 );
 
                 // Update review decision to pending human review
-                sqlx::query(
-                    r#"
-                    UPDATE documents
-                    SET status = 'PENDING_HUMAN_REVIEW', updated_at = CURRENT_TIMESTAMP
-                    WHERE id = $1
-                    "#,
-                )
-                .bind(input.document_id)
-                .execute(&self.context.pool)
-                .await?;
+                document_state::request_human_review(&self.context.pool, input.document_id, None)
+                    .await?;
 
                 sqlx::query(
                     r#"
@@ -1091,16 +1068,8 @@ pub async fn process_human_review_callback(
             }
 
             // Approve the document
-            sqlx::query(
-                r#"
-                UPDATE documents
-                SET status = 'EXPORT_READY', review_completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-                WHERE id = $1
-                "#,
-            )
-            .bind(document_id)
-            .execute(pool)
-            .await?;
+            document_state::complete_review(pool, document_id, None).await?;
+            document_state::mark_export_ready(pool, document_id).await?;
 
             sqlx::query(
                 r#"
@@ -1133,15 +1102,11 @@ pub async fn process_human_review_callback(
 
         "reject" => {
             // Reject the document
-            sqlx::query(
-                r#"
-                UPDATE documents
-                SET status = 'FAILED', updated_at = CURRENT_TIMESTAMP
-                WHERE id = $1
-                "#,
+            document_state::mark_accounting_failed(
+                pool,
+                document_id,
+                Some("Rejected by human reviewer"),
             )
-            .bind(document_id)
-            .execute(pool)
             .await?;
 
             sqlx::query(
@@ -1188,16 +1153,14 @@ pub async fn process_human_review_callback(
 
         "rerun_accounting" => {
             let mut tx = pool.begin().await?;
-            sqlx::query(
-                r#"
-                UPDATE documents
-                SET status = 'PROCESSING_ACCOUNTANT', updated_at = CURRENT_TIMESTAMP
-                WHERE id = $1
-                "#,
+            crate::document_state::request_accounting_in_tx(&mut tx, document_id).await?;
+            crate::document_state::request_human_review_in_tx(
+                &mut tx,
+                document_id,
+                Some("Accounting rerun requested by human reviewer"),
             )
-            .bind(document_id)
-            .execute(&mut *tx)
             .await?;
+            crate::document_state::mark_export_not_ready_in_tx(&mut tx, document_id).await?;
 
             sqlx::query(
                 r#"
@@ -1263,15 +1226,24 @@ pub async fn process_human_review_text_input(
     apply_correction_value(&mut tx, document_id, field, text).await?;
     upsert_review_correction(&mut tx, document_id, field, text, reviewed_by).await?;
 
-    sqlx::query(
-        r#"
-        UPDATE documents
-        SET status = 'PROCESSING_VALIDATOR', updated_at = CURRENT_TIMESTAMP
-        WHERE id = $1
-        "#,
+    crate::document_state::start_validation_in_tx(&mut tx, document_id).await?;
+    crate::document_state::request_human_review_in_tx(&mut tx, document_id, None).await?;
+    db_helpers::record_document_event_in_tx(
+        &mut tx,
+        document_id,
+        "VALIDATION_STARTED",
+        serde_json::json!({}),
     )
-    .bind(document_id)
-    .execute(&mut *tx)
+    .await?;
+    db_helpers::record_document_event_in_tx(
+        &mut tx,
+        document_id,
+        "STATUS_CHANGED",
+        serde_json::json!({
+            "accounting_status": "VALIDATING",
+            "run_kind": "VALIDATION"
+        }),
+    )
     .await?;
     db_helpers::record_document_event_in_tx(
         &mut tx,

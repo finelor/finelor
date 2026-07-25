@@ -212,9 +212,9 @@ Available tools:
 
 | Tool | Capability | Description |
 | --- | --- | --- |
-| `document_status_summary` | `documents:read` | Returns exact document counts by processing status. |
-| `list_documents` | `documents:read` | Lists recent documents with exact total count and compact items. |
-| `get_document` | `documents:read` | Returns compact status/details for one document by `document_short_ref`. |
+| `document_status_summary` | `documents:read` | Returns exact document counts grouped by intake and accounting domains. |
+| `list_documents` | `documents:read` | Lists recent documents with exact total count and nested domain status summaries. |
+| `get_document` | `documents:read` | Returns compact document details plus nested domain status detail for one document by `document_short_ref`. |
 | `explain_document` | `documents:explain` | Explains why one document is blocked, pending, failed, or ready. |
 
 Not exposed in this version:

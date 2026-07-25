@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::agents::{Agent, AgentContext, DocumentStatus};
+use crate::agents::{Agent, AgentContext};
 use crate::db::DbPool;
 use crate::error::{AppError, AppResult};
 use crate::export::{
@@ -317,9 +317,13 @@ impl ExportAgent {
 
     /// Query documents ready for export
     async fn query_ready_documents(&self, input: &ExportInput) -> AppResult<Vec<ExportDocument>> {
-        let mut builder: QueryBuilder<'_, Sqlite> =
-            QueryBuilder::new("SELECT id, document_type, filename FROM documents WHERE status = ");
-        builder.push_bind(DocumentStatus::ExportReady.as_str());
+        let mut builder: QueryBuilder<'_, Sqlite> = QueryBuilder::new(
+            "SELECT d.id, d.document_type, d.filename \
+             FROM documents d \
+             JOIN document_accounting_state das ON das.document_id = d.id \
+             WHERE das.status = ",
+        );
+        builder.push_bind("READY_FOR_EXPORT");
 
         if let Some(date_from) = input.date_from {
             builder
@@ -335,14 +339,14 @@ impl ExportAgent {
         }
         if let Some(confidence_min) = input.confidence_min {
             builder.push(
-                " AND EXISTS (SELECT 1 FROM review_decisions rd WHERE rd.document_id = documents.id AND rd.confidence_score >= ",
+                " AND EXISTS (SELECT 1 FROM review_decisions rd WHERE rd.document_id = d.id AND rd.confidence_score >= ",
             );
             builder.push_bind(confidence_min).push(")");
         }
         if let Some(document_types) = input.document_types.as_ref()
             && !document_types.is_empty()
         {
-            builder.push(" AND document_type IN (");
+            builder.push(" AND d.document_type IN (");
             let mut separated = builder.separated(", ");
             for value in document_types {
                 separated.push_bind(value);
@@ -695,18 +699,7 @@ impl ExportAgent {
         batch_id: i64,
     ) -> AppResult<()> {
         for doc_id in document_ids {
-            sqlx::query(
-                r#"
-                UPDATE documents
-                SET status = $1, exported_at = CURRENT_TIMESTAMP, exported_in_batch = $2, updated_at = CURRENT_TIMESTAMP
-                WHERE id = $3
-                "#,
-            )
-            .bind(DocumentStatus::Exported.as_str())
-            .bind(batch_id)
-            .bind(doc_id)
-            .execute(&mut **tx)
-            .await?;
+            crate::document_state::mark_exported_in_tx(tx, *doc_id, batch_id).await?;
             sqlx::query(
                 r#"
                 INSERT INTO document_events (document_id, event_type, payload)
@@ -879,17 +872,7 @@ impl Agent for ExportAgent {
         let mut tx = self.context.pool.begin().await?;
 
         for doc_id in &doc_ids {
-            sqlx::query(
-                r#"
-                UPDATE documents
-                SET status = $1, updated_at = CURRENT_TIMESTAMP
-                WHERE id = $2
-                "#,
-            )
-            .bind(DocumentStatus::GeneratingSie4.as_str())
-            .bind(doc_id)
-            .execute(&mut *tx)
-            .await?;
+            crate::document_state::start_exporting_in_tx(&mut tx, *doc_id, Some(batch_id)).await?;
         }
 
         // Store export batch paths after files are generated.

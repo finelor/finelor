@@ -1,10 +1,10 @@
 use crate::web::components::ui::{
-    AccountingTable, Alert, AlertKind, ButtonKind, Card, Eyebrow, Grid, GridCols, GridItem,
-    GridSpan, HiddenPlaceholder, InfoItem, Inline, Justify, KeyValueList, KeyValueRow, LinkButton,
-    LoadingCard, MutedAccountingCells, PageTitle, ReceiptPreview, Space, Stack, StatusBadge,
-    ValidationText,
+    AccountingTable, Alert, AlertKind, ButtonKind, Card, DocumentStateBadges, Eyebrow, Grid,
+    GridCols, GridItem, GridSpan, HiddenPlaceholder, InfoItem, Inline, Justify, KeyValueList,
+    KeyValueRow, LinkButton, LoadingCard, MutedAccountingCells, PageTitle, ReceiptPreview, Space,
+    Stack, ValidationText,
 };
-use crate::web::server::auth::{AccountingRow, DocumentDetails, get_document_details};
+use crate::web::server::dashboard::{AccountingRow, DocumentDetails, get_document_details};
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 
@@ -77,7 +77,10 @@ fn render_doc_details(doc: DocumentDetails) -> impl IntoView {
 
             <Alert kind=AlertKind::Success>
                 <PageTitle>"Document Details"</PageTitle>
-                <StatusBadge status=doc.status.clone() />
+                <DocumentStateBadges
+                    intake_status=doc.status.intake.status.clone().unwrap_or_default()
+                    accounting_status=doc.status.accounting.status.clone().unwrap_or_default()
+                />
                 {doc.short_ref.clone()}
             </Alert>
 

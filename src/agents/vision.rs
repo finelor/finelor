@@ -7,7 +7,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::Row;
 use tracing::{info, warn};
 
-use crate::agents::{Agent, AgentContext, DocumentStatus, db_helpers};
+use crate::agents::{Agent, AgentContext};
+use crate::document_state;
 use crate::error::{AppError, AppResult};
 use crate::inference::{ImageJsonRequest, InferenceProvider, extract_json_from_response};
 use crate::queue::QueueProducer;
@@ -406,12 +407,13 @@ impl Agent for VisionAgent {
             "Starting vision extraction"
         );
 
-        // Update status and timestamps
+        document_state::mark_intake_processing(&self.context.pool, input.document_id).await?;
         self.context
-            .update_document_status(input.document_id, DocumentStatus::ProcessingVision)
-            .await?;
-
-        db_helpers::update_vision_timestamps(&self.context.pool, input.document_id, true, false)
+            .record_document_event(
+                input.document_id,
+                "STATUS_CHANGED",
+                serde_json::json!({ "intake_status": "PROCESSING" }),
+            )
             .await?;
 
         // Get file path from DB if not provided
@@ -483,12 +485,13 @@ impl Agent for VisionAgent {
         self.store_extracted_fields(input.document_id, &extracted_fields)
             .await?;
 
-        // Update status
+        document_state::mark_intake_ingested(&self.context.pool, input.document_id).await?;
         self.context
-            .update_document_status(input.document_id, DocumentStatus::VisionComplete)
-            .await?;
-
-        db_helpers::update_vision_timestamps(&self.context.pool, input.document_id, false, true)
+            .record_document_event(
+                input.document_id,
+                "STATUS_CHANGED",
+                serde_json::json!({ "intake_status": "INGESTED" }),
+            )
             .await?;
 
         self.context

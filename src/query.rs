@@ -1,4 +1,5 @@
 use crate::db::DbPool;
+use crate::document_state::DocumentStateSnapshot;
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct WorkspaceProfile {
@@ -23,11 +24,25 @@ pub struct DocumentStatusCounts {
     pub failed_count: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct GroupedDocumentStatusCounts {
+    pub documents_total: i64,
+    pub intake_processing_count: i64,
+    pub intake_ingested_count: i64,
+    pub intake_failed_count: i64,
+    pub accounting_processing_count: i64,
+    pub accounting_pending_review_count: i64,
+    pub accounting_ready_for_export_count: i64,
+    pub accounting_exported_count: i64,
+    pub accounting_failed_count: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, sqlx::FromRow)]
 pub struct DocumentSummary {
     pub id: i64,
     pub short_ref: String,
-    pub status: String,
+    pub intake_status: Option<String>,
+    pub accounting_status: Option<String>,
     pub supplier_name: Option<String>,
     pub invoice_date: Option<String>,
     pub total_amount: Option<String>,
@@ -39,14 +54,16 @@ pub struct DocumentSummary {
 pub struct DocumentRef {
     pub id: i64,
     pub short_ref: String,
-    pub status: String,
+    pub intake_status: Option<String>,
+    pub accounting_status: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct AccountingProcessingCandidate {
     pub id: i64,
     pub short_ref: String,
-    pub status: String,
+    pub intake_status: String,
+    pub accounting_status: String,
     pub accounting_requested_at: Option<String>,
 }
 
@@ -54,7 +71,9 @@ pub struct AccountingProcessingCandidate {
 pub struct RetryDocument {
     pub id: i64,
     pub short_ref: String,
-    pub status: String,
+    pub intake_status: Option<String>,
+    pub accounting_status: Option<String>,
+    pub review_reason: Option<String>,
     pub original_path: Option<String>,
     pub mime_type: Option<String>,
     pub filename: Option<String>,
@@ -64,7 +83,8 @@ pub struct RetryDocument {
 pub struct DocumentWhyDetails {
     pub id: i64,
     pub short_ref: String,
-    pub status: String,
+    pub intake_status: Option<String>,
+    pub accounting_status: Option<String>,
     pub decision_type: Option<String>,
     pub confidence_score: Option<f64>,
     pub review_reason: Option<String>,
@@ -95,6 +115,206 @@ pub struct SourceMediaArtifact {
     pub external_file_id: Option<String>,
     pub mime_type: Option<String>,
     pub filename: Option<String>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct DocumentSummaryRow {
+    id: i64,
+    short_ref: String,
+    supplier_name: Option<String>,
+    invoice_date: Option<String>,
+    total_amount: Option<String>,
+    confidence_score: Option<f64>,
+    review_reason: Option<String>,
+    intake_status: Option<String>,
+    accounting_status: Option<String>,
+    accounting_requested_at: Option<String>,
+    accounting_review_reason: Option<String>,
+    accounting_export_batch_id: Option<i64>,
+    latest_accounting_run_kind: Option<String>,
+    latest_accounting_run_status: Option<String>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct DocumentStatusRow {
+    id: i64,
+    short_ref: String,
+    intake_status: Option<String>,
+    accounting_status: Option<String>,
+    accounting_requested_at: Option<String>,
+    accounting_review_reason: Option<String>,
+    accounting_export_batch_id: Option<i64>,
+    latest_accounting_run_kind: Option<String>,
+    latest_accounting_run_status: Option<String>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct RetryDocumentRow {
+    id: i64,
+    short_ref: String,
+    original_path: Option<String>,
+    mime_type: Option<String>,
+    filename: Option<String>,
+    review_reason: Option<String>,
+    intake_status: Option<String>,
+    accounting_status: Option<String>,
+    accounting_requested_at: Option<String>,
+    accounting_review_reason: Option<String>,
+    accounting_export_batch_id: Option<i64>,
+    latest_accounting_run_kind: Option<String>,
+    latest_accounting_run_status: Option<String>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct DocumentWhyDetailsRow {
+    id: i64,
+    short_ref: String,
+    decision_type: Option<String>,
+    confidence_score: Option<f64>,
+    review_reason: Option<String>,
+    invoice_status: Option<String>,
+    intake_status: Option<String>,
+    accounting_status: Option<String>,
+    accounting_requested_at: Option<String>,
+    accounting_review_reason: Option<String>,
+    accounting_export_batch_id: Option<i64>,
+    latest_accounting_run_kind: Option<String>,
+    latest_accounting_run_status: Option<String>,
+}
+
+struct DocumentStateFields {
+    document_id: i64,
+    intake_status: Option<String>,
+    accounting_status: Option<String>,
+    accounting_requested_at: Option<String>,
+    accounting_review_reason: Option<String>,
+    accounting_export_batch_id: Option<i64>,
+    latest_accounting_run_kind: Option<String>,
+    latest_accounting_run_status: Option<String>,
+}
+
+fn document_state_from_fields(fields: DocumentStateFields) -> DocumentStateSnapshot {
+    DocumentStateSnapshot {
+        document_id: fields.document_id,
+        intake_status: fields.intake_status,
+        intake_started_at: None,
+        intake_completed_at: None,
+        intake_failure_reason: None,
+        accounting_status: fields.accounting_status,
+        accounting_requested_at: fields.accounting_requested_at,
+        accounting_started_at: None,
+        accounting_completed_at: None,
+        accounting_failure_reason: None,
+        accounting_review_reason: fields.accounting_review_reason,
+        accounting_export_batch_id: fields.accounting_export_batch_id,
+        latest_accounting_run_kind: fields.latest_accounting_run_kind,
+        latest_accounting_run_status: fields.latest_accounting_run_status,
+    }
+}
+
+fn document_summary_from_row(row: DocumentSummaryRow) -> DocumentSummary {
+    let snapshot = document_state_from_fields(DocumentStateFields {
+        document_id: row.id,
+        intake_status: row.intake_status,
+        accounting_status: row.accounting_status,
+        accounting_requested_at: row.accounting_requested_at,
+        accounting_review_reason: row.accounting_review_reason,
+        accounting_export_batch_id: row.accounting_export_batch_id,
+        latest_accounting_run_kind: row.latest_accounting_run_kind,
+        latest_accounting_run_status: row.latest_accounting_run_status,
+    });
+    DocumentSummary {
+        id: row.id,
+        short_ref: row.short_ref,
+        intake_status: snapshot.intake_status.clone(),
+        accounting_status: snapshot.accounting_status.clone(),
+        supplier_name: row.supplier_name,
+        invoice_date: row.invoice_date,
+        total_amount: row.total_amount,
+        confidence_score: row.confidence_score,
+        review_reason: row
+            .review_reason
+            .or(snapshot.accounting_review_reason.clone()),
+    }
+}
+
+fn document_ref_from_row(row: DocumentStatusRow) -> DocumentRef {
+    let snapshot = document_state_from_fields(DocumentStateFields {
+        document_id: row.id,
+        intake_status: row.intake_status,
+        accounting_status: row.accounting_status,
+        accounting_requested_at: row.accounting_requested_at,
+        accounting_review_reason: row.accounting_review_reason,
+        accounting_export_batch_id: row.accounting_export_batch_id,
+        latest_accounting_run_kind: row.latest_accounting_run_kind,
+        latest_accounting_run_status: row.latest_accounting_run_status,
+    });
+    DocumentRef {
+        id: row.id,
+        short_ref: row.short_ref,
+        intake_status: snapshot.intake_status.clone(),
+        accounting_status: snapshot.accounting_status.clone(),
+    }
+}
+
+fn accounting_candidate_from_row(row: DocumentStatusRow) -> AccountingProcessingCandidate {
+    AccountingProcessingCandidate {
+        id: row.id,
+        short_ref: row.short_ref,
+        intake_status: row.intake_status.unwrap_or_default(),
+        accounting_status: row.accounting_status.unwrap_or_default(),
+        accounting_requested_at: row.accounting_requested_at,
+    }
+}
+
+fn retry_document_from_row(row: RetryDocumentRow) -> RetryDocument {
+    let snapshot = document_state_from_fields(DocumentStateFields {
+        document_id: row.id,
+        intake_status: row.intake_status,
+        accounting_status: row.accounting_status,
+        accounting_requested_at: row.accounting_requested_at,
+        accounting_review_reason: row.accounting_review_reason,
+        accounting_export_batch_id: row.accounting_export_batch_id,
+        latest_accounting_run_kind: row.latest_accounting_run_kind,
+        latest_accounting_run_status: row.latest_accounting_run_status,
+    });
+    RetryDocument {
+        id: row.id,
+        short_ref: row.short_ref,
+        intake_status: snapshot.intake_status.clone(),
+        accounting_status: snapshot.accounting_status.clone(),
+        review_reason: row
+            .review_reason
+            .or(snapshot.accounting_review_reason.clone()),
+        original_path: row.original_path,
+        mime_type: row.mime_type,
+        filename: row.filename,
+    }
+}
+
+fn document_why_from_row(row: DocumentWhyDetailsRow) -> DocumentWhyDetails {
+    let snapshot = document_state_from_fields(DocumentStateFields {
+        document_id: row.id,
+        intake_status: row.intake_status,
+        accounting_status: row.accounting_status,
+        accounting_requested_at: row.accounting_requested_at,
+        accounting_review_reason: row.accounting_review_reason,
+        accounting_export_batch_id: row.accounting_export_batch_id,
+        latest_accounting_run_kind: row.latest_accounting_run_kind,
+        latest_accounting_run_status: row.latest_accounting_run_status,
+    });
+    DocumentWhyDetails {
+        id: row.id,
+        short_ref: row.short_ref,
+        intake_status: snapshot.intake_status.clone(),
+        accounting_status: snapshot.accounting_status.clone(),
+        decision_type: row.decision_type,
+        confidence_score: row.confidence_score,
+        review_reason: row
+            .review_reason
+            .or(snapshot.accounting_review_reason.clone()),
+        invoice_status: row.invoice_status,
+    }
 }
 
 pub async fn workspace_profile(pool: &DbPool) -> anyhow::Result<Option<WorkspaceProfile>> {
@@ -142,12 +362,16 @@ pub async fn document_status_counts(pool: &DbPool) -> anyhow::Result<DocumentSta
         r#"
         SELECT
             COUNT(*) AS total_count,
-            COALESCE(SUM(CASE WHEN status IN ('RECEIVED', 'PROCESSING_VISION', 'VISION_COMPLETE', 'PROCESSING_ACCOUNTANT', 'ACCOUNTANT_REVIEWED', 'PROCESSING_VALIDATOR', 'VALIDATED', 'GENERATING_SIE4', 'REVIEW_COMPLETED') THEN 1 ELSE 0 END), 0) AS processing_count,
-            COALESCE(SUM(CASE WHEN status = 'PENDING_HUMAN_REVIEW' THEN 1 ELSE 0 END), 0) AS pending_count,
-            COALESCE(SUM(CASE WHEN status = 'EXPORT_READY' THEN 1 ELSE 0 END), 0) AS ready_count,
-            COALESCE(SUM(CASE WHEN status = 'EXPORTED' THEN 1 ELSE 0 END), 0) AS exported_count,
-            COALESCE(SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END), 0) AS failed_count
-        FROM documents
+            COALESCE(SUM(CASE WHEN dis.status = 'PROCESSING' THEN 1 ELSE 0 END), 0)
+              + COALESCE(SUM(CASE WHEN das.status IN ('REQUESTED', 'ACCOUNTING', 'VALIDATING', 'EXPORTING') THEN 1 ELSE 0 END), 0) AS processing_count,
+            COALESCE(SUM(CASE WHEN das.status = 'PENDING_REVIEW' THEN 1 ELSE 0 END), 0) AS pending_count,
+            COALESCE(SUM(CASE WHEN das.status = 'READY_FOR_EXPORT' THEN 1 ELSE 0 END), 0) AS ready_count,
+            COALESCE(SUM(CASE WHEN das.status = 'EXPORTED' THEN 1 ELSE 0 END), 0) AS exported_count,
+            COALESCE(SUM(CASE WHEN dis.status = 'FAILED' THEN 1 ELSE 0 END), 0)
+              + COALESCE(SUM(CASE WHEN das.status = 'FAILED' THEN 1 ELSE 0 END), 0) AS failed_count
+        FROM documents d
+        LEFT JOIN document_intake_state dis ON dis.document_id = d.id
+        LEFT JOIN document_accounting_state das ON das.document_id = d.id
         "#,
     )
     .fetch_one(pool)
@@ -156,30 +380,67 @@ pub async fn document_status_counts(pool: &DbPool) -> anyhow::Result<DocumentSta
     Ok(counts)
 }
 
-pub async fn list_documents_by_status(
+pub async fn grouped_document_status_counts(
     pool: &DbPool,
-    status: &str,
+) -> anyhow::Result<GroupedDocumentStatusCounts> {
+    let counts = sqlx::query_as(
+        r#"
+        SELECT
+            COUNT(*) AS documents_total,
+            COALESCE(SUM(CASE WHEN dis.status = 'PROCESSING' THEN 1 ELSE 0 END), 0) AS intake_processing_count,
+            COALESCE(SUM(CASE WHEN dis.status = 'INGESTED' THEN 1 ELSE 0 END), 0) AS intake_ingested_count,
+            COALESCE(SUM(CASE WHEN dis.status = 'FAILED' THEN 1 ELSE 0 END), 0) AS intake_failed_count,
+            COALESCE(SUM(CASE WHEN das.status IN ('REQUESTED', 'ACCOUNTING', 'VALIDATING', 'EXPORTING') THEN 1 ELSE 0 END), 0) AS accounting_processing_count,
+            COALESCE(SUM(CASE WHEN das.status = 'PENDING_REVIEW' THEN 1 ELSE 0 END), 0) AS accounting_pending_review_count,
+            COALESCE(SUM(CASE WHEN das.status = 'READY_FOR_EXPORT' THEN 1 ELSE 0 END), 0) AS accounting_ready_for_export_count,
+            COALESCE(SUM(CASE WHEN das.status = 'EXPORTED' THEN 1 ELSE 0 END), 0) AS accounting_exported_count,
+            COALESCE(SUM(CASE WHEN das.status = 'FAILED' THEN 1 ELSE 0 END), 0) AS accounting_failed_count
+        FROM documents d
+        LEFT JOIN document_intake_state dis ON dis.document_id = d.id
+        LEFT JOIN document_accounting_state das ON das.document_id = d.id
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+
+    Ok(counts)
+}
+
+pub async fn list_documents_by_accounting_status(
+    pool: &DbPool,
+    accounting_status: &str,
     limit: i64,
 ) -> anyhow::Result<Vec<DocumentSummary>> {
-    let query = document_summary_query("d.status = $1", "$2");
-    let rows = sqlx::query_as(&query)
-        .bind(status)
+    let query = document_summary_query(
+        "EXISTS (
+            SELECT 1 FROM document_accounting_state das
+            WHERE das.document_id = d.id
+              AND das.status = $1
+        )",
+        "$2",
+    );
+    let rows = sqlx::query_as::<_, DocumentSummaryRow>(&query)
+        .bind(accounting_status)
         .bind(limit)
         .fetch_all(pool)
         .await?;
 
-    Ok(rows)
+    Ok(rows.into_iter().map(document_summary_from_row).collect())
 }
 
-pub async fn count_documents_by_status(pool: &DbPool, status: &str) -> anyhow::Result<i64> {
+pub async fn count_documents_by_accounting_status(
+    pool: &DbPool,
+    accounting_status: &str,
+) -> anyhow::Result<i64> {
     let count = sqlx::query_scalar(
         r#"
         SELECT COUNT(*)
-        FROM documents
-        WHERE status = $1
+        FROM documents d
+        JOIN document_accounting_state das ON das.document_id = d.id
+        WHERE das.status = $1
         "#,
     )
-    .bind(status)
+    .bind(accounting_status)
     .fetch_one(pool)
     .await?;
 
@@ -190,18 +451,38 @@ pub async fn list_documents_requiring_attention(
     pool: &DbPool,
     limit: i64,
 ) -> anyhow::Result<Vec<DocumentSummary>> {
-    let query = document_summary_query("d.status IN ('PENDING_HUMAN_REVIEW', 'FAILED')", "$1");
-    let rows = sqlx::query_as(&query).bind(limit).fetch_all(pool).await?;
+    let query = document_summary_query(
+        "EXISTS (
+            SELECT 1
+            FROM document_intake_state dis
+            LEFT JOIN document_accounting_state das ON das.document_id = dis.document_id
+            WHERE dis.document_id = d.id
+              AND (
+                das.status = 'PENDING_REVIEW'
+                OR dis.status = 'FAILED'
+                OR das.status = 'FAILED'
+              )
+        )",
+        "$1",
+    );
+    let rows = sqlx::query_as::<_, DocumentSummaryRow>(&query)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
 
-    Ok(rows)
+    Ok(rows.into_iter().map(document_summary_from_row).collect())
 }
 
 pub async fn count_documents_requiring_attention(pool: &DbPool) -> anyhow::Result<i64> {
     let count = sqlx::query_scalar(
         r#"
         SELECT COUNT(*)
-        FROM documents
-        WHERE status IN ('PENDING_HUMAN_REVIEW', 'FAILED')
+        FROM documents d
+        LEFT JOIN document_intake_state dis ON dis.document_id = d.id
+        LEFT JOIN document_accounting_state das ON das.document_id = d.id
+        WHERE das.status = 'PENDING_REVIEW'
+           OR dis.status = 'FAILED'
+           OR das.status = 'FAILED'
         "#,
     )
     .fetch_one(pool)
@@ -215,9 +496,12 @@ pub async fn list_recent_documents(
     limit: i64,
 ) -> anyhow::Result<Vec<DocumentSummary>> {
     let query = document_summary_query("TRUE", "$1");
-    let rows = sqlx::query_as(&query).bind(limit).fetch_all(pool).await?;
+    let rows = sqlx::query_as::<_, DocumentSummaryRow>(&query)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
 
-    Ok(rows)
+    Ok(rows.into_iter().map(document_summary_from_row).collect())
 }
 
 pub async fn count_documents(pool: &DbPool) -> anyhow::Result<i64> {
@@ -242,23 +526,46 @@ pub async fn document_summary_by_short_ref(
     short_ref: &str,
 ) -> anyhow::Result<Option<DocumentSummary>> {
     let query = document_summary_query("d.short_ref = $1", "$2");
-    let row = sqlx::query_as(&query)
+    let row = sqlx::query_as::<_, DocumentSummaryRow>(&query)
         .bind(short_ref)
         .bind(1_i64)
         .fetch_optional(pool)
         .await?;
 
-    Ok(row)
+    Ok(row.map(document_summary_from_row))
 }
 
 pub async fn document_ref_by_short_ref(
     pool: &DbPool,
     short_ref: &str,
 ) -> anyhow::Result<Option<DocumentRef>> {
-    let row = sqlx::query_as(
+    let row = sqlx::query_as::<_, DocumentStatusRow>(
         r#"
-        SELECT id, short_ref, status
+        SELECT
+            d.id,
+            d.short_ref,
+            dis.status AS intake_status,
+            das.status AS accounting_status,
+            das.requested_at AS accounting_requested_at,
+            das.review_reason AS accounting_review_reason,
+            das.export_batch_id AS accounting_export_batch_id,
+            (
+                SELECT dar.run_kind
+                FROM document_accounting_runs dar
+                WHERE dar.document_id = d.id
+                ORDER BY dar.created_at DESC, dar.id DESC
+                LIMIT 1
+            ) AS latest_accounting_run_kind,
+            (
+                SELECT dar.run_status
+                FROM document_accounting_runs dar
+                WHERE dar.document_id = d.id
+                ORDER BY dar.created_at DESC, dar.id DESC
+                LIMIT 1
+            ) AS latest_accounting_run_status
         FROM documents d
+        LEFT JOIN document_intake_state dis ON dis.document_id = d.id
+        LEFT JOIN document_accounting_state das ON das.document_id = d.id
         WHERE d.short_ref = $1
         LIMIT 1
         "#,
@@ -267,17 +574,40 @@ pub async fn document_ref_by_short_ref(
     .fetch_optional(pool)
     .await?;
 
-    Ok(row)
+    Ok(row.map(document_ref_from_row))
 }
 
 pub async fn accounting_processing_candidate_by_short_ref(
     pool: &DbPool,
     short_ref: &str,
 ) -> anyhow::Result<Option<AccountingProcessingCandidate>> {
-    let row = sqlx::query_as(
+    let row = sqlx::query_as::<_, DocumentStatusRow>(
         r#"
-        SELECT id, short_ref, status, accounting_requested_at
-        FROM documents
+        SELECT
+            d.id,
+            d.short_ref,
+            dis.status AS intake_status,
+            das.status AS accounting_status,
+            das.requested_at AS accounting_requested_at,
+            das.review_reason AS accounting_review_reason,
+            das.export_batch_id AS accounting_export_batch_id,
+            (
+                SELECT dar.run_kind
+                FROM document_accounting_runs dar
+                WHERE dar.document_id = d.id
+                ORDER BY dar.created_at DESC, dar.id DESC
+                LIMIT 1
+            ) AS latest_accounting_run_kind,
+            (
+                SELECT dar.run_status
+                FROM document_accounting_runs dar
+                WHERE dar.document_id = d.id
+                ORDER BY dar.created_at DESC, dar.id DESC
+                LIMIT 1
+            ) AS latest_accounting_run_status
+        FROM documents d
+        LEFT JOIN document_intake_state dis ON dis.document_id = d.id
+        LEFT JOIN document_accounting_state das ON das.document_id = d.id
         WHERE short_ref = $1
         LIMIT 1
         "#,
@@ -286,7 +616,7 @@ pub async fn accounting_processing_candidate_by_short_ref(
     .fetch_optional(pool)
     .await?;
 
-    Ok(row)
+    Ok(row.map(accounting_candidate_from_row))
 }
 
 pub async fn accounting_processing_candidates_by_short_refs(
@@ -302,19 +632,47 @@ pub async fn accounting_processing_candidates_by_short_refs(
         .join(", ");
     let query = format!(
         r#"
-        SELECT id, short_ref, status, accounting_requested_at
-        FROM documents
-        WHERE short_ref IN ({placeholders})
-        ORDER BY received_at DESC, id DESC
+        SELECT
+            d.id,
+            d.short_ref,
+            dis.status AS intake_status,
+            das.status AS accounting_status,
+            das.requested_at AS accounting_requested_at,
+            das.review_reason AS accounting_review_reason,
+            das.export_batch_id AS accounting_export_batch_id,
+            (
+                SELECT dar.run_kind
+                FROM document_accounting_runs dar
+                WHERE dar.document_id = d.id
+                ORDER BY dar.created_at DESC, dar.id DESC
+                LIMIT 1
+            ) AS latest_accounting_run_kind,
+            (
+                SELECT dar.run_status
+                FROM document_accounting_runs dar
+                WHERE dar.document_id = d.id
+                ORDER BY dar.created_at DESC, dar.id DESC
+                LIMIT 1
+            ) AS latest_accounting_run_status
+        FROM documents d
+        LEFT JOIN document_intake_state dis ON dis.document_id = d.id
+        LEFT JOIN document_accounting_state das ON das.document_id = d.id
+        WHERE d.short_ref IN ({placeholders})
+        ORDER BY d.received_at DESC, d.id DESC
         "#
     );
 
-    let mut built = sqlx::query_as::<_, AccountingProcessingCandidate>(&query);
+    let mut built = sqlx::query_as::<_, DocumentStatusRow>(&query);
     for short_ref in short_refs {
         built = built.bind(short_ref);
     }
 
-    Ok(built.fetch_all(pool).await?)
+    Ok(built
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(accounting_candidate_from_row)
+        .collect())
 }
 
 pub async fn accounting_processing_candidates_by_ids(
@@ -330,19 +688,47 @@ pub async fn accounting_processing_candidates_by_ids(
         .join(", ");
     let query = format!(
         r#"
-        SELECT id, short_ref, status, accounting_requested_at
-        FROM documents
-        WHERE id IN ({placeholders})
-        ORDER BY received_at DESC, id DESC
+        SELECT
+            d.id,
+            d.short_ref,
+            dis.status AS intake_status,
+            das.status AS accounting_status,
+            das.requested_at AS accounting_requested_at,
+            das.review_reason AS accounting_review_reason,
+            das.export_batch_id AS accounting_export_batch_id,
+            (
+                SELECT dar.run_kind
+                FROM document_accounting_runs dar
+                WHERE dar.document_id = d.id
+                ORDER BY dar.created_at DESC, dar.id DESC
+                LIMIT 1
+            ) AS latest_accounting_run_kind,
+            (
+                SELECT dar.run_status
+                FROM document_accounting_runs dar
+                WHERE dar.document_id = d.id
+                ORDER BY dar.created_at DESC, dar.id DESC
+                LIMIT 1
+            ) AS latest_accounting_run_status
+        FROM documents d
+        LEFT JOIN document_intake_state dis ON dis.document_id = d.id
+        LEFT JOIN document_accounting_state das ON das.document_id = d.id
+        WHERE d.id IN ({placeholders})
+        ORDER BY d.received_at DESC, d.id DESC
         "#
     );
 
-    let mut built = sqlx::query_as::<_, AccountingProcessingCandidate>(&query);
+    let mut built = sqlx::query_as::<_, DocumentStatusRow>(&query);
     for document_id in document_ids {
         built = built.bind(document_id);
     }
 
-    Ok(built.fetch_all(pool).await?)
+    Ok(built
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(accounting_candidate_from_row)
+        .collect())
 }
 
 pub async fn list_accounting_eligible_documents(
@@ -350,19 +736,34 @@ pub async fn list_accounting_eligible_documents(
     limit: i64,
 ) -> anyhow::Result<Vec<DocumentSummary>> {
     let query = document_summary_query(
-        "d.status = 'VISION_COMPLETE' AND d.accounting_requested_at IS NULL",
+        "EXISTS (
+            SELECT 1
+            FROM document_intake_state dis
+            JOIN document_accounting_state das ON das.document_id = dis.document_id
+            WHERE dis.document_id = d.id
+              AND dis.status = 'INGESTED'
+              AND das.status = 'NOT_REQUESTED'
+        )",
         "$1",
     );
-    Ok(sqlx::query_as(&query).bind(limit).fetch_all(pool).await?)
+    Ok(sqlx::query_as::<_, DocumentSummaryRow>(&query)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(document_summary_from_row)
+        .collect())
 }
 
 pub async fn count_accounting_eligible_documents(pool: &DbPool) -> anyhow::Result<i64> {
     let count = sqlx::query_scalar(
         r#"
         SELECT COUNT(*)
-        FROM documents
-        WHERE status = 'VISION_COMPLETE'
-          AND accounting_requested_at IS NULL
+        FROM documents d
+        JOIN document_intake_state dis ON dis.document_id = d.id
+        JOIN document_accounting_state das ON das.document_id = d.id
+        WHERE dis.status = 'INGESTED'
+          AND das.status = 'NOT_REQUESTED'
         "#,
     )
     .fetch_one(pool)
@@ -374,29 +775,88 @@ pub async fn count_accounting_eligible_documents(pool: &DbPool) -> anyhow::Resul
 pub async fn accounting_eligible_candidates(
     pool: &DbPool,
 ) -> anyhow::Result<Vec<AccountingProcessingCandidate>> {
-    let rows = sqlx::query_as(
+    let rows = sqlx::query_as::<_, DocumentStatusRow>(
         r#"
-        SELECT id, short_ref, status, accounting_requested_at
-        FROM documents
-        WHERE status = 'VISION_COMPLETE'
-          AND accounting_requested_at IS NULL
-        ORDER BY received_at DESC, id DESC
+        SELECT
+            d.id,
+            d.short_ref,
+            dis.status AS intake_status,
+            das.status AS accounting_status,
+            das.requested_at AS accounting_requested_at,
+            das.review_reason AS accounting_review_reason,
+            das.export_batch_id AS accounting_export_batch_id,
+            (
+                SELECT dar.run_kind
+                FROM document_accounting_runs dar
+                WHERE dar.document_id = d.id
+                ORDER BY dar.created_at DESC, dar.id DESC
+                LIMIT 1
+            ) AS latest_accounting_run_kind,
+            (
+                SELECT dar.run_status
+                FROM document_accounting_runs dar
+                WHERE dar.document_id = d.id
+                ORDER BY dar.created_at DESC, dar.id DESC
+                LIMIT 1
+            ) AS latest_accounting_run_status
+        FROM documents d
+        JOIN document_intake_state dis ON dis.document_id = d.id
+        JOIN document_accounting_state das ON das.document_id = d.id
+        WHERE dis.status = 'INGESTED'
+          AND das.status = 'NOT_REQUESTED'
+        ORDER BY d.received_at DESC, d.id DESC
         "#,
     )
     .fetch_all(pool)
     .await?;
 
-    Ok(rows)
+    Ok(rows
+        .into_iter()
+        .map(accounting_candidate_from_row)
+        .collect())
 }
 
 pub async fn retry_document_by_short_ref(
     pool: &DbPool,
     short_ref: &str,
 ) -> anyhow::Result<Option<RetryDocument>> {
-    let row = sqlx::query_as(
+    let row = sqlx::query_as::<_, RetryDocumentRow>(
         r#"
-        SELECT id, short_ref, status, original_path, mime_type, filename
+        SELECT
+            d.id,
+            d.short_ref,
+            d.original_path,
+            d.mime_type,
+            d.filename,
+            (
+                SELECT review_reason
+                FROM review_decisions rd
+                WHERE rd.document_id = d.id
+                ORDER BY reviewed_at DESC, created_at DESC
+                LIMIT 1
+            ) AS review_reason,
+            dis.status AS intake_status,
+            das.status AS accounting_status,
+            das.requested_at AS accounting_requested_at,
+            das.review_reason AS accounting_review_reason,
+            das.export_batch_id AS accounting_export_batch_id,
+            (
+                SELECT dar.run_kind
+                FROM document_accounting_runs dar
+                WHERE dar.document_id = d.id
+                ORDER BY dar.created_at DESC, dar.id DESC
+                LIMIT 1
+            ) AS latest_accounting_run_kind,
+            (
+                SELECT dar.run_status
+                FROM document_accounting_runs dar
+                WHERE dar.document_id = d.id
+                ORDER BY dar.created_at DESC, dar.id DESC
+                LIMIT 1
+            ) AS latest_accounting_run_status
         FROM documents d
+        LEFT JOIN document_intake_state dis ON dis.document_id = d.id
+        LEFT JOIN document_accounting_state das ON das.document_id = d.id
         WHERE d.short_ref = $1
         LIMIT 1
         "#,
@@ -405,19 +865,18 @@ pub async fn retry_document_by_short_ref(
     .fetch_optional(pool)
     .await?;
 
-    Ok(row)
+    Ok(row.map(retry_document_from_row))
 }
 
 pub async fn document_why_details(
     pool: &DbPool,
     short_ref: &str,
 ) -> anyhow::Result<Option<DocumentWhyDetails>> {
-    let row = sqlx::query_as(
+    let row = sqlx::query_as::<_, DocumentWhyDetailsRow>(
         r#"
         SELECT
             d.id,
             d.short_ref,
-            d.status,
             (
                 SELECT decision_type
                 FROM review_decisions rd
@@ -445,8 +904,29 @@ pub async fn document_why_details(
                 WHERE i.document_id = d.id
                 ORDER BY updated_at DESC
                 LIMIT 1
-            ) AS invoice_status
+            ) AS invoice_status,
+            dis.status AS intake_status,
+            das.status AS accounting_status,
+            das.requested_at AS accounting_requested_at,
+            das.review_reason AS accounting_review_reason,
+            das.export_batch_id AS accounting_export_batch_id,
+            (
+                SELECT dar.run_kind
+                FROM document_accounting_runs dar
+                WHERE dar.document_id = d.id
+                ORDER BY dar.created_at DESC, dar.id DESC
+                LIMIT 1
+            ) AS latest_accounting_run_kind,
+            (
+                SELECT dar.run_status
+                FROM document_accounting_runs dar
+                WHERE dar.document_id = d.id
+                ORDER BY dar.created_at DESC, dar.id DESC
+                LIMIT 1
+            ) AS latest_accounting_run_status
         FROM documents d
+        LEFT JOIN document_intake_state dis ON dis.document_id = d.id
+        LEFT JOIN document_accounting_state das ON das.document_id = d.id
         WHERE d.short_ref = $1
         LIMIT 1
         "#,
@@ -455,7 +935,7 @@ pub async fn document_why_details(
     .fetch_optional(pool)
     .await?;
 
-    Ok(row)
+    Ok(row.map(document_why_from_row))
 }
 
 pub async fn latest_failure_event_for_document(
@@ -559,7 +1039,6 @@ fn document_summary_query(status_clause: &str, limit_placeholder: &str) -> Strin
         SELECT
             d.id,
             d.short_ref,
-            d.status,
             (
                 SELECT parsed_value
                 FROM extracted_fields ef
@@ -594,8 +1073,29 @@ fn document_summary_query(status_clause: &str, limit_placeholder: &str) -> Strin
                 WHERE rd.document_id = d.id
                 ORDER BY reviewed_at DESC, created_at DESC
                 LIMIT 1
-            ) AS review_reason
+            ) AS review_reason,
+            dis.status AS intake_status,
+            das.status AS accounting_status,
+            das.requested_at AS accounting_requested_at,
+            das.review_reason AS accounting_review_reason,
+            das.export_batch_id AS accounting_export_batch_id,
+            (
+                SELECT dar.run_kind
+                FROM document_accounting_runs dar
+                WHERE dar.document_id = d.id
+                ORDER BY dar.created_at DESC, dar.id DESC
+                LIMIT 1
+            ) AS latest_accounting_run_kind,
+            (
+                SELECT dar.run_status
+                FROM document_accounting_runs dar
+                WHERE dar.document_id = d.id
+                ORDER BY dar.created_at DESC, dar.id DESC
+                LIMIT 1
+            ) AS latest_accounting_run_status
         FROM documents d
+        LEFT JOIN document_intake_state dis ON dis.document_id = d.id
+        LEFT JOIN document_accounting_state das ON das.document_id = d.id
         WHERE {status_clause}
         ORDER BY d.created_at DESC
         LIMIT {limit_placeholder}

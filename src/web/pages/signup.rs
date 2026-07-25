@@ -19,7 +19,7 @@ pub fn Signup() -> impl IntoView {
 
             <Grid columns=GridCols::SplitTwo gap=Space::Xl section=true>
                 <Card>
-                    <Badge tone=Tone::Info style=BadgeStyle::Soft>"Fintech-grade workflow"</Badge>
+                    <Badge tone=Tone::Info style=BadgeStyle::Soft>"Fintech-grade controls"</Badge>
                     <div>
                         <HeroTitle>"AI bookkeeping, built for modern teams."</HeroTitle>
                         <LeadText>

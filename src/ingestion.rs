@@ -8,15 +8,30 @@ use tracing::info;
 use crate::agents::{Agent, AgentContext, IntakeInput};
 use crate::agents::{db_helpers::record_document_event, publish_document_event};
 use crate::config::AppConfig;
+use crate::document_state;
 use crate::orchestration::Orchestrator;
 use crate::queue::QueueProducer;
 use crate::web::events::AppEventBus;
 
 /// Result of saving or retrieving a document through the common ingestion boundary.
-#[derive(Debug, Clone, sqlx::FromRow, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow, Serialize, Deserialize)]
 pub struct SavedDocumentRef {
     pub id: i64,
     pub short_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SaveDocumentOutcome {
+    Created(SavedDocumentRef),
+    Duplicate(SavedDocumentRef),
+}
+
+impl SaveDocumentOutcome {
+    pub fn document_ref(&self) -> &SavedDocumentRef {
+        match self {
+            SaveDocumentOutcome::Created(saved) | SaveDocumentOutcome::Duplicate(saved) => saved,
+        }
+    }
 }
 
 /// Input for the shared ingestion helper.
@@ -56,7 +71,7 @@ pub async fn ingest_document(
     queue_producer: &QueueProducer,
     events: Option<&AppEventBus>,
     input: IngestionInput,
-) -> anyhow::Result<SavedDocumentRef> {
+) -> anyhow::Result<SaveDocumentOutcome> {
     let file_hash = calculate_file_hash(&input.file_bytes);
     let file_size = input.file_bytes.len() as i64;
 
@@ -96,7 +111,7 @@ pub async fn ingest_document(
             let _ = publish_document_event(pool, events, event_id, saved.id, "DUPLICATE_DETECTED")
                 .await;
         }
-        return Ok(saved);
+        return Ok(SaveDocumentOutcome::Duplicate(saved));
     }
 
     // Save to disk
@@ -110,18 +125,17 @@ pub async fn ingest_document(
     let saved: SavedDocumentRef = sqlx::query_as(
         r#"
         INSERT INTO documents (
-            status, document_type, filename, original_path,
+            document_type, filename, original_path,
             file_hash, file_size_bytes, mime_type, priority
         )
         VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8
+            $1, $2, $3, $4, $5, $6, $7
         )
         ON CONFLICT (file_hash) DO UPDATE SET
             updated_at = CURRENT_TIMESTAMP
         RETURNING id, short_ref
         "#,
     )
-    .bind("RECEIVED")
     .bind(&input.document_type)
     .bind(&input.filename)
     .bind(path.to_str())
@@ -132,6 +146,10 @@ pub async fn ingest_document(
     .fetch_one(pool)
     .await
     .context("Failed to save document to database")?;
+
+    document_state::initialize_document_state(pool, saved.id)
+        .await
+        .context("Failed to initialize document state")?;
 
     insert_document_artifact(pool, saved.id, &input, &file_hash).await?;
 
@@ -149,8 +167,7 @@ pub async fn ingest_document(
         saved.id,
         "STATUS_CHANGED",
         serde_json::json!({
-            "old_status": null,
-            "new_status": "RECEIVED",
+            "intake_status": "RECEIVED",
             "artifact_channel_type": &input.artifact.channel_type,
             "content_hash": &file_hash,
             "short_ref": &saved.short_ref,
@@ -177,7 +194,7 @@ pub async fn ingest_document(
         .await
         .context("failed to queue document for intake")?;
 
-    Ok(saved)
+    Ok(SaveDocumentOutcome::Created(saved))
 }
 
 async fn insert_document_artifact(

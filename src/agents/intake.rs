@@ -2,7 +2,8 @@ use std::path::PathBuf;
 
 use tracing::{error, info, warn};
 
-use crate::agents::{Agent, AgentContext, DocumentStatus};
+use crate::agents::{Agent, AgentContext};
+use crate::document_state;
 use crate::error::{AppError, AppResult};
 use crate::queue::{Job, JobType, QueueProducer};
 
@@ -56,16 +57,11 @@ impl IntakeAgent {
 
     /// Check if the document has already been processed (duplicate detection)
     async fn check_duplicate(&self, document_id: i64) -> AppResult<bool> {
-        let record: Option<String> = sqlx::query_scalar(
-            r#"
-            SELECT status FROM documents WHERE id = $1
-            "#,
-        )
-        .bind(document_id)
-        .fetch_optional(&self.context.pool)
-        .await?;
+        let record = document_state::fetch_document_state(&self.context.pool, document_id)
+            .await?
+            .and_then(|snapshot| snapshot.intake_status);
 
-        // If document exists and is past RECEIVED state, it's being processed
+        // If document exists and is past RECEIVED intake state, it's being processed
         if let Some(status) = record {
             return Ok(status != "RECEIVED");
         }
@@ -135,9 +131,13 @@ impl Agent for IntakeAgent {
             AppError::Database(e)
         })?;
 
-        // Update status to PROCESSING_VISION
+        document_state::mark_intake_processing(&self.context.pool, input.document_id).await?;
         self.context
-            .update_document_status(input.document_id, DocumentStatus::ProcessingVision)
+            .record_document_event(
+                input.document_id,
+                "STATUS_CHANGED",
+                serde_json::json!({ "intake_status": "PROCESSING" }),
+            )
             .await?;
 
         // Queue job for VisionAgent

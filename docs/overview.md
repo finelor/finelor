@@ -3,7 +3,7 @@
 ## Our Vision
 <div align="center">
  
-> We believe the future of accounting is not another dashboard, ERP system, or bookkeeping tool, but an autonomous, conversational, AI-native finance department that lives directly inside the communication channels businesses already use every day. Instead of forcing companies to adapt to complex software and manual workflows, Finelor enables AI agents to handle operational finance tasks such as bookkeeping, invoice processing, reconciliation, approvals, reporting, and financial coordination autonomously while interacting naturally with humans through platforms like Telegram, Slack, WhatsApp, and email. 
+> We believe the future of accounting is not another dashboard, ERP system, or bookkeeping tool, but an autonomous, conversational, AI-native finance department that lives directly inside the communication channels businesses already use every day. Instead of forcing companies to adapt to complex software and manual processes, Finelor enables AI agents to handle operational finance tasks such as bookkeeping, invoice processing, reconciliation, approvals, reporting, and financial coordination autonomously while interacting naturally with humans through platforms like Telegram, Slack, WhatsApp, and email. 
 >
 > Our vision is to build the foundational infrastructure for agentic financial operations where finance becomes embedded, intelligent, transparent, scalable, and continuously operational, giving every business access to enterprise-grade financial capabilities powered by AI rather than traditional human-heavy accounting structures.
 
@@ -11,7 +11,7 @@
 
 ## What Is Finelor?
 
-Finelor is an agentic platform AI-native finance and accounting departments designed to help business users run core accounting and finance workflows with less manual effort.
+Finelor is an agentic platform AI-native finance and accounting departments designed to help business users run core accounting and finance operations with less manual effort.
 
 It enables companies to interact with an AI-driven accounting department directly through the communication tools they already use.
 
@@ -21,13 +21,13 @@ Finelor is not another accounting SaaS — It is infrastructure for agentic fina
 
 ## Who It Is For
 
-Finelor is built for business users who handle recurring accounting paperwork and want more reliable, lower-friction processing. The immediate fit is founders, operators, and small teams that need accounting workflows to run consistently without becoming a full-time manual task.
+Finelor is built for business users who handle recurring accounting paperwork and want more reliable, lower-friction processing. The immediate fit is founders, operators, and small teams that need accounting operations to run consistently without becoming a full-time manual task.
 
 ## What It Does
 
 At a high level, Finelor turns incoming accounting documents into structured, reviewable, and export-oriented accounting outcomes. It aims to reduce repetitive work, improve consistency, and keep humans focused on exceptions instead of routine processing.
 
-The result is a workflow where users can:
+The result is an operating flow where users can:
 
 - ingest invoices/receipts from supported channels
 - get extracted and analyzed accounting data
@@ -40,13 +40,13 @@ Finelor can receive user interactions and document intake through messaging chan
 
 ## Assistant
 
-Finelor includes an agentic assistant layer that users can chat with directly through channels such as Telegram. Users can ask operational questions, get workflow guidance, and interact with accounting flows through normal chat conversations.
+Finelor includes an agentic assistant layer that users can chat with directly through channels such as Telegram. Users can ask operational questions, get procedural guidance, and interact with accounting flows through normal chat conversations.
 
 ## Agents
 
 ### Intake Agent
 
-Receives incoming documents, registers them in the workflow, and prepares them for processing.
+Receives incoming documents, registers them in the system, and prepares them for processing.
 
 ### Vision Agent
 

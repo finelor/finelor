@@ -602,23 +602,37 @@ pub async fn delete_channel_identity(pool: &DbPool, channel_id: i64) -> Result<b
 pub struct DocumentListRow {
     pub id: i64,
     pub short_ref: String,
-    pub status: String,
+    pub intake_status: Option<String>,
+    pub accounting_status: Option<String>,
+    pub review_reason: Option<String>,
     pub supplier_name: Option<String>,
     pub invoice_date: Option<String>,
     pub total_amount: Option<String>,
     pub received_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, FromRow)]
+struct DocumentListDbRow {
+    pub id: i64,
+    pub short_ref: String,
+    pub supplier_name: Option<String>,
+    pub invoice_date: Option<String>,
+    pub total_amount: Option<String>,
+    pub received_at: DateTime<Utc>,
+    pub intake_status: Option<String>,
+    pub accounting_status: Option<String>,
+    pub review_reason: Option<String>,
+}
+
 pub async fn list_documents(
     pool: &DbPool,
     limit: i64,
 ) -> Result<Vec<DocumentListRow>, sqlx::Error> {
-    let rows = sqlx::query_as::<_, DocumentListRow>(
+    let rows = sqlx::query_as::<_, DocumentListDbRow>(
         r#"
         SELECT
             d.id,
             d.short_ref,
-            d.status,
             (
                 SELECT parsed_value
                 FROM extracted_fields ef
@@ -640,8 +654,13 @@ pub async fn list_documents(
                 ORDER BY ef.created_at DESC
                 LIMIT 1
             ) AS total_amount,
-            d.received_at
+            d.received_at,
+            dis.status AS intake_status,
+            das.status AS accounting_status,
+            das.review_reason AS review_reason
         FROM documents d
+        LEFT JOIN document_intake_state dis ON dis.document_id = d.id
+        LEFT JOIN document_accounting_state das ON das.document_id = d.id
         WHERE TRUE
         ORDER BY d.received_at DESC
         LIMIT $1
@@ -651,5 +670,18 @@ pub async fn list_documents(
     .fetch_all(pool)
     .await?;
 
-    Ok(rows)
+    Ok(rows
+        .into_iter()
+        .map(|row| DocumentListRow {
+            id: row.id,
+            short_ref: row.short_ref,
+            intake_status: row.intake_status,
+            accounting_status: row.accounting_status,
+            review_reason: row.review_reason,
+            supplier_name: row.supplier_name,
+            invoice_date: row.invoice_date,
+            total_amount: row.total_amount,
+            received_at: row.received_at,
+        })
+        .collect())
 }

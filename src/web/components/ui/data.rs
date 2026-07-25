@@ -1,4 +1,4 @@
-use crate::web::components::ui::{Badge, Tone};
+use crate::web::components::ui::DocumentStateBadges;
 use icondata::Icon as IconData;
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -160,7 +160,8 @@ pub fn TransactionRow(
     title: String,
     reference: String,
     amount: String,
-    status: String,
+    #[prop(optional)] intake_status: String,
+    #[prop(optional)] accounting_status: String,
     confidence: String,
 ) -> impl IntoView {
     view! {
@@ -172,12 +173,10 @@ pub fn TransactionRow(
             </div>
             <p class="text-sm font-semibold text-base-content">{amount}</p>
             <p class="text-sm text-base-content/65">"Money Out"</p>
-            <Badge tone=match status.as_str() {
-                "EXPORT_READY" | "EXPORTED" => Tone::Success,
-                "PENDING_HUMAN_REVIEW" => Tone::Warning,
-                "FAILED" => Tone::Error,
-                _ => Tone::Info,
-            }>{status}</Badge>
+            <DocumentStateBadges
+                intake_status=intake_status
+                accounting_status=accounting_status
+            />
             <p class="text-sm text-base-content/65">{confidence}</p>
         </a>
     }

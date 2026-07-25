@@ -20,6 +20,7 @@ endif
 	prompt-assets-check \
 	dev-build dev-up dev-down dev-clean dev-logs dev-all-logs \
 	release-build release-up release-down release-clean release-logs release-all-logs \
+	hosts-rehearse-db-migrations dev-rehearse-db-migrations release-rehearse-db-migrations \
 	wait-health health build-release docker-build \
 	docs-check sweep
 
@@ -335,3 +336,47 @@ health: ## Call the app health endpoint once
 build-release: web-build-release ## Build Leptos SSR server + hydrated WASM assets locally with --release
 
 docker-build: release-build
+
+hosts-rehearse-db-migrations: ## Clone the host/local SQLite DB and rehearse all pending repo migrations on the copy
+	@set -eu; \
+	source_db="$(DATABASE_PATH)"; \
+	if [ -z "$$source_db" ]; then \
+		source_db=".finelor/db/finelor.db"; \
+	fi; \
+	python3 scripts/check_db_migrations.py \
+		--source-db "$$source_db" \
+		--label host
+
+dev-rehearse-db-migrations: ## Copy the running dev Docker DB and rehearse all pending repo migrations on the copy
+	@set -eu; \
+	container_id="$$( $(DEV_COMPOSE) ps -q app )"; \
+	if [ -z "$$container_id" ]; then \
+		echo "Development app container is not running. Start it with 'make dev-up' first."; \
+		exit 1; \
+	fi; \
+	stamp="$$(date +%Y%m%d-%H%M%S)"; \
+	output_dir=".migration-checks/dev-$$stamp"; \
+	mkdir -p "$$output_dir"; \
+	source_copy="$$output_dir/finelor-live-source.db"; \
+	docker cp "$$container_id:/app/.finelor/db/finelor.db" "$$source_copy"; \
+	python3 scripts/check_db_migrations.py \
+		--source-db "$$source_copy" \
+		--output-dir "$$output_dir" \
+		--label dev-docker
+
+release-rehearse-db-migrations: ## Copy the running release Docker DB and rehearse all pending repo migrations on the copy
+	@set -eu; \
+	container_id="$$( $(RELEASE_COMPOSE) ps -q app )"; \
+	if [ -z "$$container_id" ]; then \
+		echo "Release app container is not running. Start it with 'make release-up' first."; \
+		exit 1; \
+	fi; \
+	stamp="$$(date +%Y%m%d-%H%M%S)"; \
+	output_dir=".migration-checks/release-$$stamp"; \
+	mkdir -p "$$output_dir"; \
+	source_copy="$$output_dir/finelor-live-source.db"; \
+	docker cp "$$container_id:/app/.finelor/db/finelor.db" "$$source_copy"; \
+	python3 scripts/check_db_migrations.py \
+		--source-db "$$source_copy" \
+		--output-dir "$$output_dir" \
+		--label release-docker

@@ -11,7 +11,7 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::db;
-use crate::ingestion::{self, SavedDocumentRef};
+use crate::ingestion::{self, SaveDocumentOutcome};
 use crate::integrations::telegram::{TelegramNotifier, escape_markdown};
 use crate::messaging::contracts::{
     ActionButton, AgentInboundMessage, GatewayAttachment, GatewayMessageFormat, MessageSource,
@@ -1045,16 +1045,11 @@ async fn handle_photo(
     }
 
     match download_and_save_file(&bot, &file_id, &state, &msg, "image/jpeg", None).await {
-        Ok(saved) => {
-            bot.send_message(
-                chat_id,
-                format! {
-                    "✅ Photo saved successfully! Reference: {}",
-                    escape_markdown(&saved.short_ref)
-                },
-            )
-            .await?;
+        Ok(SaveDocumentOutcome::Created(saved)) => {
+            bot.send_message(chat_id, photo_saved_message(&saved.short_ref))
+                .await?;
         }
+        Ok(SaveDocumentOutcome::Duplicate(_)) => {}
         Err(e) => {
             error!(error = %e, "Failed to process photo");
             bot.send_message(chat_id, "❌ Failed to process photo. Please try again.")
@@ -1096,17 +1091,11 @@ async fn handle_document(
     )
     .await
     {
-        Ok(saved) => {
-            bot.send_message(
-                chat_id,
-                format! {
-                    "✅ Document '{}' saved successfully! Reference: {}",
-                    escape_markdown(&filename),
-                    escape_markdown(&saved.short_ref)
-                },
-            )
-            .await?;
+        Ok(SaveDocumentOutcome::Created(saved)) => {
+            bot.send_message(chat_id, document_saved_message(&filename, &saved.short_ref))
+                .await?;
         }
+        Ok(SaveDocumentOutcome::Duplicate(_)) => {}
         Err(e) => {
             error!(error = %e, "Failed to process document");
             bot.send_message(chat_id, "❌ Failed to process document. Please try again.")
@@ -1124,7 +1113,7 @@ async fn download_and_save_file(
     msg: &Message,
     mime_type: &str,
     original_filename: Option<String>,
-) -> anyhow::Result<SavedDocumentRef> {
+) -> anyhow::Result<SaveDocumentOutcome> {
     let file = bot.get_file(file_id).await?;
     let dest = file.path.as_str();
 
@@ -1194,6 +1183,21 @@ async fn download_and_save_file(
         },
     )
     .await
+}
+
+fn photo_saved_message(short_ref: &str) -> String {
+    format!(
+        "✅ Photo saved successfully! Reference: {}",
+        escape_markdown(short_ref)
+    )
+}
+
+fn document_saved_message(filename: &str, short_ref: &str) -> String {
+    format!(
+        "✅ Document '{}' saved successfully! Reference: {}",
+        escape_markdown(filename),
+        escape_markdown(short_ref)
+    )
 }
 
 fn build_stored_upload_filename(
@@ -1276,5 +1280,21 @@ mod tests {
     fn telegram_media_is_document_for_non_image_mime_types() {
         assert!(!telegram_media_is_photo("application/pdf"));
         assert!(!telegram_media_is_photo("application/octet-stream"));
+    }
+
+    #[test]
+    fn photo_saved_message_includes_reference() {
+        assert_eq!(
+            photo_saved_message("D000007"),
+            "✅ Photo saved successfully! Reference: D000007"
+        );
+    }
+
+    #[test]
+    fn document_saved_message_includes_filename_and_reference() {
+        assert_eq!(
+            document_saved_message("invoice.pdf", "D000007"),
+            "✅ Document 'invoice\\.pdf' saved successfully! Reference: D000007"
+        );
     }
 }

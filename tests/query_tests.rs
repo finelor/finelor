@@ -2,27 +2,12 @@
 
 mod common;
 
+use common::TestDocumentStatePreset as Preset;
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
-async fn create_document(pool: &SqlitePool, status: &str) -> (i64, String) {
-    let document_token = Uuid::new_v4();
-    let file_hash = format!("query_test_hash_{}", document_token.simple());
-
-    let row: (i64, String) = sqlx::query_as(
-        r#"
-        INSERT INTO documents (filename, status, file_hash)
-        VALUES ('query-test.pdf', $1, $2)
-        RETURNING id, short_ref
-        "#,
-    )
-    .bind(status)
-    .bind(file_hash)
-    .fetch_one(pool)
-    .await
-    .expect("create document");
-
-    row
+async fn create_document(pool: &SqlitePool, preset: Preset) -> (i64, String) {
+    common::create_document_with_state_preset(pool, preset, None, "application/pdf").await
 }
 
 async fn cleanup_documents(pool: &SqlitePool, document_ids: &[i64]) {
@@ -77,8 +62,8 @@ async fn workspace_profile_reads_persisted_company_profile_values() {
 async fn query_counts_and_lists_use_single_workspace_scope() {
     let pool = common::in_memory_pool().await;
 
-    let (ready_id, ready_ref) = create_document(&pool, "EXPORT_READY").await;
-    let (pending_id, pending_ref) = create_document(&pool, "PENDING_HUMAN_REVIEW").await;
+    let (ready_id, ready_ref) = create_document(&pool, Preset::ReadyForExport).await;
+    let (pending_id, pending_ref) = create_document(&pool, Preset::PendingReview).await;
 
     let counts = finelor::query::document_status_counts(&pool)
         .await
@@ -86,7 +71,7 @@ async fn query_counts_and_lists_use_single_workspace_scope() {
     assert!(counts.ready_count >= 1);
     assert!(counts.pending_count >= 1);
 
-    let ready = finelor::query::list_documents_by_status(&pool, "EXPORT_READY", 50)
+    let ready = finelor::query::list_documents_by_accounting_status(&pool, "READY_FOR_EXPORT", 50)
         .await
         .expect("ready list");
     assert!(ready.iter().any(|d| d.short_ref == ready_ref));
@@ -102,7 +87,7 @@ async fn query_counts_and_lists_use_single_workspace_scope() {
 #[tokio::test]
 async fn source_media_artifact_lookup_returns_latest_for_workspace_document() {
     let pool = common::in_memory_pool().await;
-    let (document_id, _) = create_document(&pool, "PENDING_HUMAN_REVIEW").await;
+    let (document_id, _) = create_document(&pool, Preset::PendingReview).await;
 
     sqlx::query(
         r#"
@@ -148,8 +133,8 @@ async fn source_media_artifact_lookup_returns_latest_for_workspace_document() {
 async fn read_only_tools_return_workspace_documents() {
     let pool = common::in_memory_pool().await;
 
-    let (pending_id, pending_ref) = create_document(&pool, "PENDING_HUMAN_REVIEW").await;
-    let (ready_id, ready_ref) = create_document(&pool, "EXPORT_READY").await;
+    let (pending_id, pending_ref) = create_document(&pool, Preset::PendingReview).await;
+    let (ready_id, ready_ref) = create_document(&pool, Preset::ReadyForExport).await;
 
     let pending = finelor::messaging::tools::execute_read_only_tool(
         &pool,
@@ -203,17 +188,9 @@ async fn read_only_tools_return_workspace_documents() {
 async fn accounting_eligible_queries_only_return_unrequested_vision_complete_documents() {
     let pool = common::in_memory_pool().await;
 
-    let (eligible_id, eligible_ref) = create_document(&pool, "VISION_COMPLETE").await;
-    let (requested_id, _) = create_document(&pool, "VISION_COMPLETE").await;
-    let (processing_id, _) = create_document(&pool, "PROCESSING_ACCOUNTANT").await;
-
-    sqlx::query(
-        "UPDATE documents SET accounting_requested_at = '2026-01-01T00:00:00Z' WHERE id = $1",
-    )
-    .bind(requested_id)
-    .execute(&pool)
-    .await
-    .expect("mark requested");
+    let (eligible_id, eligible_ref) = create_document(&pool, Preset::IntakeIngested).await;
+    let (requested_id, _) = create_document(&pool, Preset::AccountingRequested).await;
+    let (processing_id, _) = create_document(&pool, Preset::AccountingRunning).await;
 
     let count = finelor::query::count_accounting_eligible_documents(&pool)
         .await

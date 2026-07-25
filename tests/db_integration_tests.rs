@@ -10,28 +10,15 @@
 
 mod common;
 
+use common::TestDocumentStatePreset as Preset;
 use serde_json::json;
 use sqlx::SqlitePool;
-use uuid::Uuid;
 
 /// Helper to create a test document
 async fn create_test_document(pool: &SqlitePool) -> i64 {
-    let document_token = Uuid::new_v4();
-    let file_hash = format!("test_hash_{}", document_token.simple());
-
-    let document_id: i64 = sqlx::query_scalar(
-        r#"
-        INSERT INTO documents (filename, status, file_hash)
-        VALUES ('test.pdf', 'RECEIVED', $1)
-        RETURNING id
-        "#,
-    )
-    .bind(file_hash)
-    .fetch_one(pool)
-    .await
-    .expect("Failed to create test document");
-
-    document_id
+    common::create_document_with_state_preset(pool, Preset::IntakeReceived, None, "application/pdf")
+        .await
+        .0
 }
 
 /// Test validation_results INSERT behavior

@@ -7,28 +7,28 @@ use serde_json::json;
 use sqlx::Row;
 use uuid::Uuid;
 
-use crate::agents::review::ApprovalBlockExplanation;
-use crate::agents::{
-    Agent, AgentContext, ExportAgent, ExportInput, IntakeAgent, IntakeInput,
-    build_failed_document_explanation, describe_approval_block,
-};
-use crate::query::{
-    AccountingProcessingCandidate, DocumentRef, DocumentSummary, ReviewSummary,
-    accounting_eligible_candidates, accounting_processing_candidate_by_short_ref,
-    accounting_processing_candidates_by_short_refs, document_ref_by_short_ref,
-    document_status_counts, document_summary_by_short_ref, document_why_details, latest_document,
-    latest_failure_event_for_document, latest_source_media_artifact, list_documents_by_status,
-    list_documents_requiring_attention, list_recent_documents, retry_document_by_short_ref,
-    review_summary,
-};
-use crate::queue::{Job, JobType, QueueProducer};
-
 use super::contracts::{
     ActionButton, DocumentAction, GatewayAttachment, GatewayMessageFormat, GatewayMessageResponse,
     MessageSource, ReviewFieldAction,
 };
 use super::gateway::AgentGatewayState;
-use super::intents::{GatewayIntentArgs, GatewayIntentKind, GatewayIntentResolution};
+use super::intents::GatewayIntentArgs;
+use crate::agents::review::ApprovalBlockExplanation;
+use crate::agents::{
+    Agent, AgentContext, ExportAgent, ExportInput, IntakeAgent, IntakeInput,
+    build_failed_document_explanation, describe_approval_block,
+};
+use crate::document_state;
+#[cfg(test)]
+use crate::query::DocumentSummary;
+use crate::query::{
+    AccountingProcessingCandidate, DocumentRef, DocumentWhyDetails, ReviewSummary,
+    accounting_eligible_candidates, accounting_processing_candidate_by_short_ref,
+    accounting_processing_candidates_by_short_refs, document_ref_by_short_ref,
+    document_why_details, latest_failure_event_for_document, latest_source_media_artifact,
+    retry_document_by_short_ref, review_summary,
+};
+use crate::queue::{Job, JobType, QueueProducer};
 
 enum ReviewEligibility {
     Reviewable,
@@ -62,257 +62,9 @@ pub(crate) struct AccountingProcessingExecution {
     pub queued_documents: Vec<AccountingProcessingCandidate>,
 }
 
-pub async fn execute_gateway_intent(
-    state: &AgentGatewayState,
-    source: &MessageSource,
-    workspace_id: Uuid,
-    resolution: &GatewayIntentResolution,
-) -> anyhow::Result<GatewayMessageResponse> {
-    if workspace_id != crate::workspace::active_workspace_id() {
-        return Ok(GatewayMessageResponse::text(
-            "Workspace scope mismatch. Please retry from your active workspace session.",
-        ));
-    }
-
-    if resolution
-        .missing_args
-        .iter()
-        .any(|arg| arg == "document_short_ref")
-    {
-        return Ok(GatewayMessageResponse::text(format!(
-            "Please include a document reference, for example /{} D000123.",
-            resolution.intent.as_str()
-        )));
-    }
-
-    match resolution.intent {
-        GatewayIntentKind::Help => Ok(GatewayMessageResponse::text(build_help_message())),
-        GatewayIntentKind::Status => Ok(GatewayMessageResponse::text(
-            if let Some(short_ref) = resolution.args.document_short_ref.as_deref() {
-                build_document_status_message(&state.pool, short_ref).await?
-            } else {
-                build_status_message(&state.pool).await?
-            },
-        )),
-        GatewayIntentKind::Documents => Ok(GatewayMessageResponse::text(
-            build_all_documents_message(&state.pool).await?,
-        )),
-        GatewayIntentKind::Pending => Ok(GatewayMessageResponse::text(
-            build_attention_required_message(&state.pool).await?,
-        )),
-        GatewayIntentKind::Ready => Ok(GatewayMessageResponse::text(
-            build_document_list_message(
-                &state.pool,
-                "EXPORT_READY",
-                "No documents are currently in your export pool.",
-                "Documents ready for export",
-            )
-            .await?,
-        )),
-        GatewayIntentKind::Last => Ok(GatewayMessageResponse::text(
-            build_last_message(&state.pool).await?,
-        )),
-        GatewayIntentKind::Why => {
-            let Some(short_ref) = resolution.args.document_short_ref.as_deref() else {
-                return Ok(GatewayMessageResponse::text("Usage: /why D000123"));
-            };
-            Ok(GatewayMessageResponse::text(
-                describe_document_why(&state.pool, short_ref).await?,
-            ))
-        }
-        GatewayIntentKind::Review => {
-            let Some(short_ref) = resolution.args.document_short_ref.as_deref() else {
-                return Ok(GatewayMessageResponse::text("Usage: /review D000123"));
-            };
-            reopen_review_actions(&state.pool, short_ref).await
-        }
-        GatewayIntentKind::Retry => {
-            let Some(short_ref) = resolution.args.document_short_ref.as_deref() else {
-                return Ok(GatewayMessageResponse::text("Usage: /retry D000123"));
-            };
-            Ok(GatewayMessageResponse::text(
-                retry_document(state, source, short_ref).await?,
-            ))
-        }
-        GatewayIntentKind::Export => {
-            export_documents(state, source, workspace_id, &resolution.args).await
-        }
-        GatewayIntentKind::UploadInstruction => Ok(GatewayMessageResponse::text(
-            "Send an invoice or receipt as a file or image in this chat, and I will add it to the company document flow.",
-        )),
-        GatewayIntentKind::OutOfScope => Ok(GatewayMessageResponse::text(out_of_scope_message())),
-        GatewayIntentKind::Unknown | GatewayIntentKind::GeneralAccountingChat => {
-            Ok(GatewayMessageResponse::text(build_help_message()))
-        }
-    }
-}
-
-pub fn out_of_scope_message() -> &'static str {
-    "I cannot help with that. I can help with invoices, receipts, document status, review, retry, export, and how to upload accounting documents."
-}
-
 pub fn build_help_message() -> String {
-    "Welcome to Finelor.\n\nCommands:\n/help - Show this help\n/status - Show overall document counts by status\n/documents - List recent company documents\n/pending - List documents that need your attention\n/ready - List documents in the export pool\n/last - Show your latest document\n/why D000123 - Explain why a document is blocked or pending\n/review D000123 - Open review actions for a pending or reviewable failed document\n/retry D000123 - Reprocess a failed or completed document from the start\n/export - Export your current export pool\n/export D000123 - Export one specific document if it is ready\n\nYou can also ask for these in plain language, for example: \"what needs review?\" or \"what is the status of our invoices?\""
+    "Welcome to Finelor.\n\nUse Finelor in plain language. You can ask for document status, why a document is blocked, what needs attention, what is ready for export, and what to retry, review, or export. You can also upload an invoice or receipt directly in chat as a file or image.\n\nExamples:\n- \"What is the status now?\"\n- \"Why is D000123 blocked?\"\n- \"Show documents that need attention\"\n- \"Open review for D000123\"\n- \"Retry D000123\"\n- \"Export ready documents\"\n- \"I want to upload a receipt\"\n\nSlash commands are no longer needed for operations. /help is available if you want this guide again."
         .to_string()
-}
-
-async fn build_status_message(pool: &DbPool) -> anyhow::Result<String> {
-    let counts = document_status_counts(pool).await?;
-    let jurisdiction = crate::query::workspace_identity(pool)
-        .await?
-        .and_then(|identity| identity.jurisdiction);
-    let last = latest_document(pool).await?;
-    let mut lines = vec![
-        "Finelor status:".to_string(),
-        format!("Documents in system: {}", counts.total_count),
-        format!("Being processed: {}", counts.processing_count),
-        format!("Pending review: {}", counts.pending_count),
-        format!("Export ready: {}", counts.ready_count),
-        format!("Exported: {}", counts.exported_count),
-        format!("Failed: {}", counts.failed_count),
-    ];
-
-    match jurisdiction {
-        Some(jurisdiction) => lines.push(format!(
-            "Being processed in {}: {}",
-            jurisdiction, counts.processing_count
-        )),
-        None => lines.push(format!(
-            "Being processed in workspace jurisdiction: {}",
-            counts.processing_count
-        )),
-    }
-
-    if let Some(last) = last {
-        lines.push(String::new());
-        lines.push(format!("Latest: {} ({})", last.short_ref, last.status));
-    }
-
-    Ok(lines.join("\n"))
-}
-
-async fn build_document_status_message(pool: &DbPool, short_ref: &str) -> anyhow::Result<String> {
-    let Some(document) = document_summary_by_short_ref(pool, short_ref).await? else {
-        return Ok(format!(
-            "Document {} was not found for this company.",
-            short_ref
-        ));
-    };
-
-    let mut lines = vec![
-        format!("Document: {}", document.short_ref),
-        format!("Status: {}", document.status),
-    ];
-    if let Some(supplier) = document.supplier_name.as_deref() {
-        lines.push(format!("Supplier: {}", supplier));
-    }
-    if let Some(amount) = document.total_amount.as_deref() {
-        lines.push(format!("Amount: {} SEK", amount));
-    }
-    if let Some(date) = document.invoice_date.as_deref() {
-        lines.push(format!("Date: {}", date));
-    }
-    if let Some(confidence) = document.confidence_score {
-        lines.push(format!(
-            "Confidence: {:.0}%",
-            confidence_to_percent(confidence)
-        ));
-    }
-    if let Some(reason) = document.review_reason.as_deref() {
-        lines.push(format!("Why: {}", reason));
-    }
-
-    Ok(lines.join("\n"))
-}
-
-async fn build_document_list_message(
-    pool: &DbPool,
-    status: &str,
-    empty_message: &str,
-    title: &str,
-) -> anyhow::Result<String> {
-    let documents = list_documents_by_status(pool, status, 11).await?;
-    if documents.is_empty() {
-        return Ok(empty_message.to_string());
-    }
-
-    let remaining = documents.len().saturating_sub(10);
-    let mut lines = vec![format!("{title}:")];
-    for document in documents.iter().take(10) {
-        lines.push(format_document_line(document));
-    }
-    if remaining > 0 {
-        lines.push(format!("...and {} more.", remaining));
-    }
-
-    Ok(lines.join("\n"))
-}
-
-async fn build_attention_required_message(pool: &DbPool) -> anyhow::Result<String> {
-    let documents = list_documents_requiring_attention(pool, 11).await?;
-    if documents.is_empty() {
-        return Ok("No documents currently need your attention.".to_string());
-    }
-
-    let remaining = documents.len().saturating_sub(10);
-    let mut lines = vec!["Documents requiring attention:".to_string()];
-    for document in documents.iter().take(10) {
-        lines.push(format_attention_document_line(document));
-    }
-    if remaining > 0 {
-        lines.push(format!("...and {} more.", remaining));
-    }
-
-    Ok(lines.join("\n"))
-}
-
-async fn build_last_message(pool: &DbPool) -> anyhow::Result<String> {
-    let Some(document) = latest_document(pool).await? else {
-        return Ok("No documents found for this company yet.".to_string());
-    };
-
-    let mut lines = vec![
-        format!("Latest document: {}", document.short_ref),
-        format!("Status: {}", document.status),
-    ];
-    if let Some(supplier) = &document.supplier_name {
-        lines.push(format!("Supplier: {}", supplier));
-    }
-    if let Some(amount) = &document.total_amount {
-        lines.push(format!("Amount: {} SEK", amount));
-    }
-    if let Some(date) = &document.invoice_date {
-        lines.push(format!("Date: {}", date));
-    }
-    if let Some(confidence) = document.confidence_score {
-        lines.push(format!(
-            "Confidence: {:.0}%",
-            confidence_to_percent(confidence)
-        ));
-    }
-    if let Some(reason) = &document.review_reason {
-        lines.push(format!("Why: {}", reason));
-    }
-
-    Ok(lines.join("\n"))
-}
-
-async fn build_all_documents_message(pool: &DbPool) -> anyhow::Result<String> {
-    let documents = list_recent_documents(pool, 26).await?;
-    if documents.is_empty() {
-        return Ok("No documents found for this company yet.".to_string());
-    }
-
-    let remaining = documents.len().saturating_sub(25);
-    let mut lines = vec!["Recent documents:".to_string()];
-    for document in documents.iter().take(25) {
-        lines.push(format_document_line_with_status(document));
-    }
-    if remaining > 0 {
-        lines.push(format!("...and {} more.", remaining));
-    }
-
-    Ok(lines.join("\n"))
 }
 
 pub async fn describe_document_why(pool: &DbPool, short_ref: &str) -> anyhow::Result<String> {
@@ -326,11 +78,21 @@ pub async fn describe_document_why(pool: &DbPool, short_ref: &str) -> anyhow::Re
     let failure_event = latest_failure_event_for_document(pool, details.id).await?;
     let mut lines = vec![format!(
         "{} is currently {}.",
-        details.short_ref, details.status
+        details.short_ref,
+        document_why_state_text(&details)
     )];
     let mut failed_explanation: Option<ApprovalBlockExplanation> = None;
+    let has_failure = has_domain_failure(
+        details.intake_status.as_deref(),
+        details.accounting_status.as_deref(),
+    );
+    let pending_review = matches!(details.accounting_status.as_deref(), Some("PENDING_REVIEW"));
+    let export_ready = matches!(
+        details.accounting_status.as_deref(),
+        Some("READY_FOR_EXPORT")
+    );
 
-    if details.status == "FAILED" {
+    if has_failure {
         if let Some(event) = failure_event.as_ref() {
             if is_system_failure_event(&event.payload) {
                 lines.extend(build_system_failure_lines(
@@ -351,7 +113,7 @@ pub async fn describe_document_why(pool: &DbPool, short_ref: &str) -> anyhow::Re
                     );
                     failed_explanation = Some(explanation);
                 }
-                lines.push(format!("Action: retry with /retry {}", details.short_ref));
+                lines.push(format!("Action: ask me to retry {}", details.short_ref));
                 lines.push("This is a system error, not a human rejection.".to_string());
             }
         } else {
@@ -366,10 +128,10 @@ pub async fn describe_document_why(pool: &DbPool, short_ref: &str) -> anyhow::Re
                 lines.push(format!("Reason: {}", reason));
             }
         }
-    } else if details.status == "EXPORT_READY" || details.status == "PENDING_HUMAN_REVIEW" {
+    } else if export_ready || pending_review {
         if let Some(explanation) = describe_approval_block(pool, details.id).await? {
             explanation.append_detail_lines(&mut lines);
-        } else if details.status == "EXPORT_READY" {
+        } else if export_ready {
             lines.push("Reason: this document is healthy and ready for export.".to_string());
         } else if let Some(reason) = details.review_reason.as_deref() {
             lines.push(format!("Reason: {}", reason));
@@ -379,7 +141,7 @@ pub async fn describe_document_why(pool: &DbPool, short_ref: &str) -> anyhow::Re
     }
 
     if let Some(decision) = details.decision_type.as_deref() {
-        if details.status == "FAILED" {
+        if has_failure {
             let explanation_contains_review_state = failed_explanation
                 .as_ref()
                 .is_some_and(|explanation| explanation_has_label(explanation, "Review state"));
@@ -420,10 +182,7 @@ pub(crate) async fn retry_document(
         ));
     };
 
-    if !matches!(
-        document.status.as_str(),
-        "FAILED" | "PENDING_HUMAN_REVIEW" | "EXPORT_READY" | "EXPORTED"
-    ) {
+    if !retry_is_allowed(&document) {
         return Ok(format!(
             "Document {} is already being processed and cannot be retried right now.",
             document.short_ref
@@ -449,7 +208,7 @@ pub(crate) async fn retry_document(
         .filename
         .clone()
         .unwrap_or_else(|| "unknown".to_string());
-    let previous_status = document.status.clone();
+    let previous_status = retry_document_state_text(&document);
 
     let mut tx = state.pool.begin().await?;
     sqlx::query(
@@ -505,22 +264,14 @@ pub(crate) async fn retry_document(
     sqlx::query(
         r#"
         UPDATE documents
-        SET status = 'RECEIVED',
-            accounting_requested_at = NULL,
-            vision_started_at = NULL,
-            vision_completed_at = NULL,
-            accountant_reviewed_at = NULL,
-            validated_at = NULL,
-            review_completed_at = NULL,
-            exported_at = NULL,
-            exported_in_batch = NULL,
-            updated_at = CURRENT_TIMESTAMP
+        SET updated_at = CURRENT_TIMESTAMP
         WHERE id = $1
         "#,
     )
     .bind(document.id)
     .execute(&mut *tx)
     .await?;
+    document_state::reset_document_state_in_tx(&mut tx, document.id).await?;
     sqlx::query(
         r#"
         INSERT INTO document_events (document_id, event_type, payload)
@@ -642,17 +393,7 @@ pub(crate) async fn execute_accounting_processing_request(
     let mut tx = pool.begin().await?;
 
     for document in documents {
-        sqlx::query(
-            r#"
-            UPDATE documents
-            SET accounting_requested_at = COALESCE(accounting_requested_at, CURRENT_TIMESTAMP),
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = $1
-            "#,
-        )
-        .bind(document.id)
-        .execute(&mut *tx)
-        .await?;
+        document_state::request_accounting_in_tx(&mut tx, document.id).await?;
 
         crate::agents::db_helpers::record_document_event_in_tx(
             &mut tx,
@@ -744,7 +485,21 @@ pub(crate) fn describe_accounting_processing_execution(
 }
 
 fn candidate_is_accounting_eligible(candidate: &AccountingProcessingCandidate) -> bool {
-    candidate.status == "VISION_COMPLETE" && candidate.accounting_requested_at.is_none()
+    candidate.intake_status == "INGESTED" && candidate.accounting_status == "NOT_REQUESTED"
+}
+
+fn has_domain_failure(intake_status: Option<&str>, accounting_status: Option<&str>) -> bool {
+    matches!(intake_status, Some("FAILED")) || matches!(accounting_status, Some("FAILED"))
+}
+
+fn retry_is_allowed(document: &crate::query::RetryDocument) -> bool {
+    has_domain_failure(
+        document.intake_status.as_deref(),
+        document.accounting_status.as_deref(),
+    ) || matches!(
+        document.accounting_status.as_deref(),
+        Some("PENDING_REVIEW" | "READY_FOR_EXPORT" | "EXPORTED")
+    )
 }
 
 fn candidate_skip_reason(
@@ -754,18 +509,22 @@ fn candidate_skip_reason(
         return None;
     }
 
-    let reason =
-        if candidate.status == "VISION_COMPLETE" && candidate.accounting_requested_at.is_some() {
-            "already requested"
-        } else if matches!(candidate.status.as_str(), "RECEIVED" | "PROCESSING_VISION") {
-            "not ready yet"
-        } else {
-            "already processed or in progress"
-        };
+    let reason = if candidate.accounting_status == "REQUESTED"
+        || candidate.accounting_requested_at.is_some()
+    {
+        "already requested"
+    } else if matches!(candidate.intake_status.as_str(), "RECEIVED" | "PROCESSING") {
+        "not ready yet"
+    } else {
+        "already processed or in progress"
+    };
 
     Some(AccountingProcessingSkip {
         short_ref: Some(candidate.short_ref.clone()),
-        status: Some(candidate.status.clone()),
+        status: Some(summarize_document_state(
+            Some(candidate.intake_status.as_str()),
+            Some(candidate.accounting_status.as_str()),
+        )),
         reason,
     })
 }
@@ -896,7 +655,8 @@ pub(crate) async fn export_documents(
                     match document_ref_by_short_ref(&state.pool, short_ref).await? {
                         Some(document) => format!(
                             "{} is not currently in your export pool. Current status: {}.",
-                            document.short_ref, document.status
+                            document.short_ref,
+                            document_ref_state_text(&document)
                         ),
                         None => format!("Document {} was not found for this company.", short_ref),
                     }
@@ -974,13 +734,13 @@ async fn resolve_export_user_id(pool: &DbPool, source: &MessageSource) -> anyhow
         }) {
         Some(connected_by) => connected_by.parse::<i64>().map_err(|_| {
             anyhow!(
-                "Connected channel owner metadata is invalid. Reconnect the channel from Settings > Channels as admin, then try /export again."
+                "Connected channel owner metadata is invalid. Reconnect the channel from Settings > Channels as admin, then ask me to export again."
             )
         })?,
         None if source.channel == ChannelType::Slack => fallback_export_user_id(pool).await?,
         None => {
             return Err(anyhow!(
-                "Connected channel owner is missing from metadata. Reconnect the channel from Settings > Channels as admin, then try /export again."
+                "Connected channel owner is missing from metadata. Reconnect the channel from Settings > Channels as admin, then ask me to export again."
             ));
         }
     };
@@ -992,7 +752,7 @@ async fn resolve_export_user_id(pool: &DbPool, source: &MessageSource) -> anyhow
 
     if !user_exists {
         return Err(anyhow!(
-            "Connected channel owner no longer exists. Reconnect the channel from Settings > Channels while logged in as admin, then try /export again."
+            "Connected channel owner no longer exists. Reconnect the channel from Settings > Channels while logged in as admin, then ask me to export again."
         ));
     }
 
@@ -1012,7 +772,7 @@ async fn fallback_export_user_id(pool: &DbPool) -> anyhow::Result<i64> {
     .await?
     .ok_or_else(|| {
         anyhow!(
-            "No user exists to attribute the export. Create an admin user, then try /export again."
+            "No user exists to attribute the export. Create an admin user, then ask me to export again."
         )
     })
 }
@@ -1021,17 +781,23 @@ async fn determine_review_eligibility(
     pool: &DbPool,
     document: &DocumentRef,
 ) -> anyhow::Result<ReviewEligibility> {
-    if document.status == "PENDING_HUMAN_REVIEW" {
+    if matches!(
+        document.accounting_status.as_deref(),
+        Some("PENDING_REVIEW")
+    ) {
         return Ok(ReviewEligibility::Reviewable);
     }
 
-    if document.status == "FAILED" {
+    if has_domain_failure(
+        document.intake_status.as_deref(),
+        document.accounting_status.as_deref(),
+    ) {
         let failure_event = latest_failure_event_for_document(pool, document.id).await?;
         if let Some(event) = failure_event.as_ref()
             && is_system_failure_event(&event.payload)
         {
             return Ok(ReviewEligibility::NotReviewableSystemFailure(format!(
-                "{} failed due to a temporary system issue, so the review actions cannot be reopened directly. Use /retry {} to restart processing, or /why {} for more detail.",
+                "{} failed due to a temporary system issue, so the review actions cannot be reopened directly. Ask me to retry {} to restart processing, or ask why {} is blocked for more detail.",
                 document.short_ref, document.short_ref, document.short_ref
             )));
         }
@@ -1039,19 +805,26 @@ async fn determine_review_eligibility(
         return Ok(ReviewEligibility::Reviewable);
     }
 
-    let message = match document.status.as_str() {
-        "EXPORT_READY" => format!(
-            "{} is already in the export pool. Use /why {} to inspect any remaining blockers, or /export {} to try exporting just this document.",
+    let message = if matches!(
+        document.accounting_status.as_deref(),
+        Some("READY_FOR_EXPORT")
+    ) {
+        format!(
+            "{} is already in the export pool. Ask why {} is blocked to inspect any remaining blockers, or ask me to export {} if you want to export just this document.",
             document.short_ref, document.short_ref, document.short_ref
-        ),
-        "EXPORTED" => format!(
-            "{} has already been exported. Use /retry {} if you need to reprocess it from the start.",
+        )
+    } else if matches!(document.accounting_status.as_deref(), Some("EXPORTED")) {
+        format!(
+            "{} has already been exported. Ask me to retry {} if you need to reprocess it from the start.",
             document.short_ref, document.short_ref
-        ),
-        _ => format!(
-            "{} is not currently waiting for human review. Current status: {}. Use /why {} to inspect it.",
-            document.short_ref, document.status, document.short_ref
-        ),
+        )
+    } else {
+        format!(
+            "{} is not currently waiting for human review. Current status: {}. Ask why {} is blocked if you want more detail.",
+            document.short_ref,
+            document_ref_state_text(document),
+            document.short_ref
+        )
     };
 
     Ok(ReviewEligibility::NotReviewableStatus(message))
@@ -1157,6 +930,68 @@ fn confidence_to_percent(value: f64) -> f64 {
     value * 100.0
 }
 
+fn summarize_document_state(
+    intake_status: Option<&str>,
+    accounting_status: Option<&str>,
+) -> String {
+    if matches!(intake_status, Some("FAILED")) {
+        return "intake failed".to_string();
+    }
+    if matches!(accounting_status, Some("FAILED")) {
+        return "accounting failed".to_string();
+    }
+    if matches!(accounting_status, Some("EXPORTED")) {
+        return "exported".to_string();
+    }
+    if matches!(accounting_status, Some("EXPORTING")) {
+        return "exporting".to_string();
+    }
+    if matches!(accounting_status, Some("READY_FOR_EXPORT")) {
+        return "ready for export".to_string();
+    }
+    if matches!(accounting_status, Some("PENDING_REVIEW")) {
+        return "pending review".to_string();
+    }
+    if matches!(accounting_status, Some("VALIDATING")) {
+        return "validating".to_string();
+    }
+    if matches!(accounting_status, Some("ACCOUNTING")) {
+        return "accounting processing".to_string();
+    }
+    if matches!(accounting_status, Some("REQUESTED")) {
+        return "accounting requested".to_string();
+    }
+    if matches!(intake_status, Some("INGESTED")) {
+        return "ingested".to_string();
+    }
+    if matches!(intake_status, Some("PROCESSING")) {
+        return "intake processing".to_string();
+    }
+    "received".to_string()
+}
+
+fn document_ref_state_text(document: &DocumentRef) -> String {
+    summarize_document_state(
+        document.intake_status.as_deref(),
+        document.accounting_status.as_deref(),
+    )
+}
+
+fn retry_document_state_text(document: &crate::query::RetryDocument) -> String {
+    summarize_document_state(
+        document.intake_status.as_deref(),
+        document.accounting_status.as_deref(),
+    )
+}
+
+fn document_why_state_text(document: &DocumentWhyDetails) -> String {
+    summarize_document_state(
+        document.intake_status.as_deref(),
+        document.accounting_status.as_deref(),
+    )
+}
+
+#[cfg(test)]
 fn format_document_line(document: &DocumentSummary) -> String {
     let supplier = document
         .supplier_name
@@ -1169,7 +1004,10 @@ fn format_document_line(document: &DocumentSummary) -> String {
         document.short_ref, supplier, amount, date
     );
 
-    if document.status == "EXPORT_READY" {
+    if matches!(
+        document.accounting_status.as_deref(),
+        Some("READY_FOR_EXPORT")
+    ) {
         if let Some(confidence) = document.confidence_score {
             line.push_str(&format!(" - {:.0}%", confidence_to_percent(confidence)));
         }
@@ -1180,11 +1018,20 @@ fn format_document_line(document: &DocumentSummary) -> String {
     line
 }
 
+#[cfg(test)]
 fn format_attention_document_line(document: &DocumentSummary) -> String {
-    let action = match document.status.as_str() {
-        "PENDING_HUMAN_REVIEW" => "review needed",
-        "FAILED" => "failed",
-        _ => "needs attention",
+    let action = if matches!(
+        document.accounting_status.as_deref(),
+        Some("PENDING_REVIEW")
+    ) {
+        "review needed"
+    } else if has_domain_failure(
+        document.intake_status.as_deref(),
+        document.accounting_status.as_deref(),
+    ) {
+        "failed"
+    } else {
+        "needs attention"
     };
     let supplier = document
         .supplier_name
@@ -1200,24 +1047,17 @@ fn format_attention_document_line(document: &DocumentSummary) -> String {
 
     if let Some(reason) = document.review_reason.as_deref() {
         line.push_str(&format!(" - {}", reason));
-    } else if document.status == "FAILED" {
-        line.push_str(&format!(" - use /why {} for details", document.short_ref));
+    } else if has_domain_failure(
+        document.intake_status.as_deref(),
+        document.accounting_status.as_deref(),
+    ) {
+        line.push_str(&format!(
+            " - ask why {} is blocked for details",
+            document.short_ref
+        ));
     }
 
     line
-}
-
-fn format_document_line_with_status(document: &DocumentSummary) -> String {
-    let supplier = document
-        .supplier_name
-        .as_deref()
-        .unwrap_or("Unknown supplier");
-    let amount = document.total_amount.as_deref().unwrap_or("N/A");
-    let date = document.invoice_date.as_deref().unwrap_or("N/A");
-    format!(
-        "{} - {} - {} - {} SEK - {}",
-        document.short_ref, document.status, supplier, amount, date
-    )
 }
 
 fn extract_failure_reason(payload: &serde_json::Value) -> Option<String> {
@@ -1274,7 +1114,7 @@ fn build_system_failure_lines(short_ref: &str, stage: Option<&str>) -> Vec<Strin
         lines.push(format!("Stage: {}", humanize_failure_stage(stage)));
     }
 
-    lines.push(format!("Action: retry with /retry {}", short_ref));
+    lines.push(format!("Action: ask me to retry {}", short_ref));
     lines
 }
 
@@ -1322,15 +1162,16 @@ mod tests {
         let help = build_help_message();
         assert!(!help.contains("/start"));
         assert!(help.contains("/help"));
-        assert!(help.contains("/status"));
-        assert!(help.contains("/documents"));
-        assert!(help.contains("/pending"));
-        assert!(help.contains("/ready"));
-        assert!(help.contains("/last"));
-        assert!(help.contains("/why D000123"));
-        assert!(help.contains("/review D000123"));
-        assert!(help.contains("/retry D000123"));
-        assert!(help.contains("/export D000123"));
+        assert!(!help.contains("/status"));
+        assert!(!help.contains("/documents"));
+        assert!(!help.contains("/pending"));
+        assert!(!help.contains("/ready"));
+        assert!(!help.contains("/last"));
+        assert!(!help.contains("/why D000123"));
+        assert!(!help.contains("/review D000123"));
+        assert!(!help.contains("/retry D000123"));
+        assert!(!help.contains("/export D000123"));
+        assert!(help.contains("upload an invoice or receipt directly in chat"));
         assert!(help.contains("plain language"));
     }
 
@@ -1339,7 +1180,8 @@ mod tests {
         let document = DocumentSummary {
             id: 0,
             short_ref: "D000123".to_string(),
-            status: "FAILED".to_string(),
+            intake_status: Some("FAILED".to_string()),
+            accounting_status: Some("NOT_REQUESTED".to_string()),
             supplier_name: Some("Test Supplier".to_string()),
             invoice_date: Some("2026-04-20".to_string()),
             total_amount: Some("149.00".to_string()),
@@ -1350,7 +1192,7 @@ mod tests {
         let line = format_attention_document_line(&document);
         assert_eq!(
             line,
-            "D000123 - failed - Test Supplier - 149.00 SEK - 2026-04-20 - use /why D000123 for details"
+            "D000123 - failed - Test Supplier - 149.00 SEK - 2026-04-20 - ask why D000123 is blocked for details"
         );
     }
 
@@ -1376,7 +1218,7 @@ mod tests {
                 "Reason: Processing could not be completed because of a temporary system issue."
                     .to_string(),
                 "Stage: Accounting".to_string(),
-                "Action: retry with /retry D000008".to_string(),
+                "Action: ask me to retry D000008".to_string(),
             ]
         );
     }
@@ -1421,7 +1263,8 @@ mod tests {
         let ready = DocumentSummary {
             id: 1,
             short_ref: "D000001".to_string(),
-            status: "EXPORT_READY".to_string(),
+            intake_status: Some("INGESTED".to_string()),
+            accounting_status: Some("READY_FOR_EXPORT".to_string()),
             supplier_name: Some("Supplier AB".to_string()),
             invoice_date: Some("2026-05-19".to_string()),
             total_amount: Some("123.45".to_string()),
@@ -1436,7 +1279,8 @@ mod tests {
         let pending = DocumentSummary {
             id: 2,
             short_ref: "D000002".to_string(),
-            status: "PENDING_HUMAN_REVIEW".to_string(),
+            intake_status: Some("INGESTED".to_string()),
+            accounting_status: Some("PENDING_REVIEW".to_string()),
             supplier_name: None,
             invoice_date: None,
             total_amount: None,
@@ -1447,6 +1291,38 @@ mod tests {
             format_document_line(&pending),
             "D000002 - Unknown supplier - N/A SEK - N/A - Missing VAT"
         );
+    }
+
+    #[test]
+    fn retry_is_allowed_uses_domain_state_not_flat_status() {
+        let reviewable = crate::query::RetryDocument {
+            id: 1,
+            short_ref: "D000010".to_string(),
+            intake_status: Some("INGESTED".to_string()),
+            accounting_status: Some("PENDING_REVIEW".to_string()),
+            review_reason: Some("Missing VAT".to_string()),
+            original_path: Some("/tmp/doc.pdf".to_string()),
+            mime_type: Some("application/pdf".to_string()),
+            filename: Some("doc.pdf".to_string()),
+        };
+        assert!(retry_is_allowed(&reviewable));
+
+        let in_flight = crate::query::RetryDocument {
+            accounting_status: Some("VALIDATING".to_string()),
+            review_reason: None,
+            ..reviewable
+        };
+        assert!(!retry_is_allowed(&in_flight));
+    }
+
+    #[test]
+    fn has_domain_failure_checks_domain_tables_directly() {
+        assert!(has_domain_failure(Some("FAILED"), Some("NOT_REQUESTED")));
+        assert!(has_domain_failure(Some("INGESTED"), Some("FAILED")));
+        assert!(!has_domain_failure(
+            Some("INGESTED"),
+            Some("READY_FOR_EXPORT")
+        ));
     }
 
     #[tokio::test]
@@ -1462,23 +1338,25 @@ mod tests {
             .expect("connect");
         crate::db::run_migrations(&pool).await.expect("migrate");
 
-        for (status, requested) in [
-            ("VISION_COMPLETE", None),
-            ("VISION_COMPLETE", Some("2026-01-01T00:00:00Z")),
-            ("PROCESSING_VISION", None),
+        for preset in [
+            crate::document_state::TestDocumentStatePreset::IntakeIngested,
+            crate::document_state::TestDocumentStatePreset::AccountingRequested,
+            crate::document_state::TestDocumentStatePreset::IntakeProcessing,
         ] {
-            sqlx::query(
+            let document_id: i64 = sqlx::query_scalar(
                 r#"
-                INSERT INTO documents (filename, status, file_hash, original_path, mime_type, accounting_requested_at)
-                VALUES ('doc.pdf', $1, $2, '/tmp/doc.pdf', 'application/pdf', $3)
+                INSERT INTO documents (filename, file_hash, original_path, mime_type)
+                VALUES ('doc.pdf', $1, '/tmp/doc.pdf', 'application/pdf')
+                RETURNING id
                 "#,
             )
-            .bind(status)
             .bind(format!("preview-{}", uuid::Uuid::new_v4()))
-            .bind(requested)
-            .execute(&pool)
+            .fetch_one(&pool)
             .await
             .expect("insert document");
+            crate::document_state::seed_document_state_preset(&pool, document_id, preset)
+                .await
+                .expect("seed document status");
         }
 
         let refs: Vec<String> =

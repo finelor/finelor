@@ -3,6 +3,7 @@ mod common;
 use std::sync::Arc;
 
 use axum::Router;
+use common::TestDocumentStatePreset as Preset;
 use tower::util::ServiceExt;
 
 async fn create_test_api_key(pool: &sqlx::SqlitePool) -> String {
@@ -186,11 +187,15 @@ async fn public_api_ingests_lists_details_and_downloads_with_valid_key() {
         .await
         .unwrap();
     let status: serde_json::Value = serde_json::from_slice(&status_body).unwrap();
-    assert_eq!(status["processing"].as_i64(), Some(1));
-    assert_eq!(status["pending_review"].as_i64(), Some(0));
-    assert_eq!(status["export_ready"].as_i64(), Some(0));
-    assert_eq!(status["exported"].as_i64(), Some(0));
-    assert_eq!(status["failed"].as_i64(), Some(0));
+    assert_eq!(status["documents_total"].as_i64(), Some(1));
+    assert_eq!(status["intake"]["processing"].as_i64(), Some(1));
+    assert_eq!(status["intake"]["ingested"].as_i64(), Some(0));
+    assert_eq!(status["intake"]["failed"].as_i64(), Some(0));
+    assert_eq!(status["accounting"]["processing"].as_i64(), Some(0));
+    assert_eq!(status["accounting"]["pending_review"].as_i64(), Some(0));
+    assert_eq!(status["accounting"]["ready_for_export"].as_i64(), Some(0));
+    assert_eq!(status["accounting"]["exported"].as_i64(), Some(0));
+    assert_eq!(status["accounting"]["failed"].as_i64(), Some(0));
 
     let detail_response = app
         .clone()
@@ -289,6 +294,60 @@ async fn public_api_ingests_lists_details_and_downloads_with_valid_key() {
             .as_deref(),
         Some(token.as_str())
     );
+}
+
+#[tokio::test]
+async fn public_api_lists_documents_with_domain_filters() {
+    let pool = common::in_memory_pool().await;
+    let token = create_test_api_key(&pool).await;
+    let app = public_api_app(pool.clone());
+
+    let _ = common::create_document_with_state_preset(
+        &pool,
+        Preset::ReadyForExport,
+        None,
+        "application/pdf",
+    )
+    .await;
+    let (pending_id, pending_ref) = common::create_document_with_state_preset(
+        &pool,
+        Preset::PendingReview,
+        None,
+        "application/pdf",
+    )
+    .await;
+
+    let response = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("GET")
+                .uri("/documents?accounting_status=PENDING_REVIEW")
+                .header("Authorization", format!("Bearer {token}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert!(response.status().is_success());
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let list: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(list["total"].as_i64(), Some(1));
+    assert_eq!(
+        list["items"][0]["short_ref"].as_str(),
+        Some(pending_ref.as_str())
+    );
+    assert_eq!(
+        list["items"][0]["status"]["accounting"]["status"].as_str(),
+        Some("PENDING_REVIEW")
+    );
+
+    let _ = sqlx::query("DELETE FROM document_artifacts WHERE document_id = $1")
+        .bind(pending_id)
+        .execute(&pool)
+        .await;
 }
 
 #[tokio::test]

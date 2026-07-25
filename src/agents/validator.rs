@@ -7,7 +7,7 @@ use chrono::{Duration, Local, NaiveDate};
 use tracing::info;
 
 use crate::agents::{
-    Agent, AgentContext, DocumentStatus, FieldLoadMode, db_helpers, validation::AmountsLogicCheck,
+    Agent, AgentContext, FieldLoadMode, db_helpers, validation::AmountsLogicCheck,
     validation::DateCheck, validation::ErrorSeverity, validation::OcrNumberCheck,
     validation::OrgNrCheck, validation::SuggestedCorrections, validation::ValidationChecks,
     validation::ValidationError, validation::ValidationResult, validation::ValidationStatus,
@@ -15,6 +15,7 @@ use crate::agents::{
     validation::VatCalculationCheck,
 };
 use crate::confidence::{AgentConfidence, ConfidenceCalculator, store_composite_confidence};
+use crate::document_state;
 use crate::error::{AppError, AppResult};
 
 #[derive(Debug, Default)]
@@ -663,7 +664,21 @@ impl Agent for ValidatorAgent {
         info!(document_id = %input.document_id, "Starting deterministic validation");
 
         self.context
-            .update_document_status(input.document_id, DocumentStatus::ProcessingValidator)
+            .record_document_event(
+                input.document_id,
+                "VALIDATION_STARTED",
+                serde_json::json!({}),
+            )
+            .await?;
+        self.context
+            .record_document_event(
+                input.document_id,
+                "STATUS_CHANGED",
+                serde_json::json!({
+                    "accounting_status": "VALIDATING",
+                    "run_kind": "VALIDATION"
+                }),
+            )
             .await?;
 
         let context = self.gather_context(input.document_id).await?;
@@ -695,19 +710,13 @@ impl Agent for ValidatorAgent {
             .await?;
         store_composite_confidence(&self.context.pool, input.document_id, &composite).await?;
 
-        sqlx::query(
-            r#"
-            UPDATE documents
-            SET validated_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-            WHERE id = $1
-            "#,
-        )
-        .bind(input.document_id)
-        .execute(&self.context.pool)
-        .await?;
-
+        document_state::complete_validation(&self.context.pool, input.document_id).await?;
         self.context
-            .update_document_status(input.document_id, DocumentStatus::Validated)
+            .record_document_event(
+                input.document_id,
+                "STATUS_CHANGED",
+                serde_json::json!({ "accounting_status": "VALIDATING" }),
+            )
             .await?;
         self.context
             .record_document_event(
