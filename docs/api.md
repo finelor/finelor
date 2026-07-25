@@ -184,6 +184,7 @@ Response DTO:
   "documents_total": 42,
   "intake": {
     "processing": 3,
+    "ingested": 40,
     "failed": 1
   },
   "accounting": {
@@ -203,6 +204,7 @@ Fields:
 | `documents_total` | integer | Total documents currently stored in the workspace. |
 | `intake` | object | Intake/ingestion counts. |
 | `intake.processing` | integer | Documents still in intake processing. |
+| `intake.ingested` | integer | All successfully ingested documents, including documents that may already have progressed into accounting. |
 | `intake.failed` | integer | Documents failed during intake. |
 | `accounting` | object | Accounting/review/export counts. |
 | `accounting.processing` | integer | Documents currently requested for or processing through accounting. |

@@ -185,13 +185,13 @@ Once Finelor MCP is configured, you can ask things like:
 - “Show me the current Finelor document status summary.”
 - “List the 10 most recent Finelor documents.”
 - “Explain why document D000123 is blocked.”
-- “Get the details for document D000123 and summarize the accounting status.”
-- “Which Finelor documents are still processing, and which are ready for export?”
+- “Get the details for document D000123 and summarize its intake and accounting status.”
+- “Which Finelor documents are still in intake processing, and which are ready for export?”
 
 Example follow-up prompts:
 
 - “List recent Finelor documents and point out any that need human review.”
-- “Explain the current status of D000123 in plain language.”
+- “Explain the current intake and accounting status of D000123 in plain language.”
 - “Compare the last five Finelor documents and tell me which ones are blocked or failed.”
 - “Summarize what is waiting in Finelor right now so I know what to review first.”
 

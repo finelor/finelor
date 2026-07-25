@@ -30,7 +30,9 @@ At a high level, Finelor turns incoming accounting documents into structured, re
 The result is an operating flow where users can:
 
 - ingest invoices/receipts from supported channels
-- get extracted and analyzed accounting data
+- get extracted and ingested document data into the system first
+- explicitly request accounting processing when they want documents to move into accounting
+- get analyzed accounting data after that request
 - review uncertain cases before finalization
 - move approved items toward export
 
@@ -71,8 +73,8 @@ Packages approved outputs into export-ready accounting artifacts for downstream 
 ## How It Works (High Level)
 
 1. Intake: documents are received and registered.
-2. Extraction: document content is extracted into structured fields.
-3. Accounting analysis: accounting interpretation is produced from extracted data.
-4. Validation: deterministic checks evaluate quality and consistency.
+2. Extraction: document content is extracted into structured fields and the document becomes ingested.
+3. Accounting request: accounting work begins only when explicitly requested.
+4. Accounting analysis and validation: accounting interpretation is produced and checked for quality and consistency.
 5. Human review: uncertain or low-confidence cases are routed for review.
 6. Export: approved outputs proceed to export-ready accounting artifacts.
